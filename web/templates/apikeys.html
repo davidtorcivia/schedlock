@@ -1,0 +1,115 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-semibold text-gray-900">API Keys</h1>
+    </div>
+
+    <!-- Create New Key Form -->
+    <div class="bg-white shadow rounded-lg p-6 mb-6">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Create New API Key</h2>
+        <form action="/apikeys" method="POST" class="flex flex-wrap gap-4 items-end"
+              hx-post="/apikeys" hx-target="#key-result" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="flex-1 min-w-[200px]">
+                <label for="name" class="block text-sm font-medium text-gray-700">Key Name</label>
+                <input type="text" name="name" id="name" required
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm"
+                       placeholder="e.g., Moltbot Production">
+            </div>
+            <div class="min-w-[150px]">
+                <label for="tier" class="block text-sm font-medium text-gray-700">Tier</label>
+                <select name="tier" id="tier" required
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
+                    <option value="read">Read (view only)</option>
+                    <option value="write" selected>Write (full access)</option>
+                    <option value="admin">Admin (includes web UI)</option>
+                </select>
+            </div>
+            <div>
+                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded font-medium">
+                    Create Key
+                </button>
+            </div>
+        </form>
+        <div id="key-result" class="mt-4"></div>
+    </div>
+
+    <!-- Existing Keys -->
+    {{if .Keys}}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Prefix</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tier</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Used</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Keys}}
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {{.Name}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-500">
+                        {{.KeyPrefix}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+                            {{if eq .Tier "admin"}}bg-purple-100 text-purple-800
+                            {{else if eq .Tier "write"}}bg-blue-100 text-blue-800
+                            {{else}}bg-gray-100 text-gray-800{{end}}">
+                            {{.Tier}}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{formatDate .CreatedAt}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{if .LastUsedAt.Valid}}{{formatDate .LastUsedAt.Time}}{{else}}Never{{end}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <form action="/apikeys/{{.ID}}/revoke" method="POST" class="inline"
+                              onsubmit="return confirm('Are you sure you want to revoke this API key? This cannot be undone.');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="text-red-600 hover:text-red-900">Revoke</button>
+                        </form>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="bg-white shadow rounded-lg p-8 text-center">
+        <span class="text-6xl">🔑</span>
+        <h3 class="mt-4 text-lg font-medium text-gray-900">No API keys yet</h3>
+        <p class="mt-2 text-sm text-gray-500">Create your first API key to start using SchedLock.</p>
+    </div>
+    {{end}}
+
+    <!-- Tier Documentation -->
+    <div class="mt-6 bg-gray-50 rounded-lg p-6">
+        <h3 class="text-sm font-medium text-gray-900 mb-3">API Key Tiers</h3>
+        <dl class="space-y-3 text-sm">
+            <div>
+                <dt class="font-medium text-gray-700">Read</dt>
+                <dd class="text-gray-500">View calendars, events, and free/busy information. No write operations.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-gray-700">Write</dt>
+                <dd class="text-gray-500">Create, update, and delete events (with approval). Includes all read permissions.</dd>
+            </div>
+            <div>
+                <dt class="font-medium text-gray-700">Admin</dt>
+                <dd class="text-gray-500">Full API access including statistics and audit logs. For monitoring tools.</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}
+
+{{template "layout" .}}

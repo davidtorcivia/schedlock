@@ -1,0 +1,109 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="max-w-2xl mx-auto">
+        <h1 class="text-2xl font-semibold text-gray-900 mb-6">Connect Google Calendar</h1>
+
+        {{if .Error}}
+        <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
+            <strong>Error:</strong> {{.Error}}
+        </div>
+        {{end}}
+
+        <div class="bg-white shadow rounded-lg p-6">
+            <div class="text-center mb-6">
+                <span class="text-6xl">📅</span>
+                <h2 class="mt-4 text-lg font-medium text-gray-900">Google Calendar Authorization</h2>
+                <p class="mt-2 text-sm text-gray-500">
+                    Follow these steps to connect your Google Calendar account.
+                </p>
+            </div>
+
+            <div class="space-y-6">
+                <!-- Step 1 -->
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-full bg-indigo-100 text-indigo-600 font-semibold text-sm">1</span>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-sm font-medium text-gray-900">Open the authorization link</h3>
+                        <p class="mt-1 text-sm text-gray-500">
+                            Click the button below to open Google's authorization page in a new tab.
+                        </p>
+                        <div class="mt-3">
+                            <a href="{{.AuthURL}}" target="_blank" rel="noopener"
+                               class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                                Open Google Authorization →
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-full bg-indigo-100 text-indigo-600 font-semibold text-sm">2</span>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-sm font-medium text-gray-900">Sign in and authorize</h3>
+                        <p class="mt-1 text-sm text-gray-500">
+                            Sign in with your Google account and grant SchedLock permission to access your calendar.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-full bg-indigo-100 text-indigo-600 font-semibold text-sm">3</span>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-sm font-medium text-gray-900">Copy the authorization code</h3>
+                        <p class="mt-1 text-sm text-gray-500">
+                            After authorizing, Google will display an authorization code. Copy it and paste it below.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Step 4 -->
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-full bg-indigo-100 text-indigo-600 font-semibold text-sm">4</span>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-sm font-medium text-gray-900">Enter the code</h3>
+                        <form action="/oauth/callback" method="POST" class="mt-3">
+                            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                            <div class="flex gap-2">
+                                <input type="text" name="code" placeholder="Paste authorization code here"
+                                       class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm font-mono"
+                                       required>
+                                <button type="submit"
+                                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700">
+                                    Connect
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-8 pt-6 border-t border-gray-200">
+                <h4 class="text-sm font-medium text-gray-700 mb-2">📝 Instructions</h4>
+                <div class="text-sm text-gray-500 space-y-2">
+                    {{range .Instructions}}
+                    <p>{{.}}</p>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 text-center">
+            <a href="/settings" class="text-indigo-600 hover:text-indigo-900 text-sm">
+                ← Back to Settings
+            </a>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{template "layout" .}}

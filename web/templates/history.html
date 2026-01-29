@@ -1,0 +1,58 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Audit History</h1>
+
+    {{if .Entries}}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Event</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actor</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP Address</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Entries}}
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{formatTime .Timestamp}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                            {{.EventType}}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {{if .RequestID.Valid}}
+                        <a href="/requests/{{.RequestID.String}}" class="text-indigo-600 hover:text-indigo-900 font-mono text-sm">
+                            {{.RequestID.String}}
+                        </a>
+                        {{else}}
+                        <span class="text-gray-400">—</span>
+                        {{end}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {{.Actor}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
+                        {{if .IPAddress.Valid}}{{.IPAddress.String}}{{else}}—{{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="bg-white shadow rounded-lg p-8 text-center">
+        <span class="text-6xl">📋</span>
+        <h3 class="mt-4 text-lg font-medium text-gray-900">No audit entries yet</h3>
+        <p class="mt-2 text-sm text-gray-500">Audit logs will appear here as actions are taken.</p>
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+{{template "layout" .}}

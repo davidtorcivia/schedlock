@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  schedlock:
+    build: .
+    container_name: schedlock
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - schedlock_data:/app/data
+    environment:
+      # Server
+      - SCHEDLOCK_SERVER_PORT=8080
+      - SCHEDLOCK_BASE_URL=${SCHEDLOCK_BASE_URL:-http://localhost:8080}
+
+      # Security
+      - SCHEDLOCK_SERVER_SECRET=${SCHEDLOCK_SERVER_SECRET:?Server secret is required}
+      - SCHEDLOCK_AUTH_PASSWORD_HASH=${SCHEDLOCK_AUTH_PASSWORD_HASH:?Password hash is required}
+
+      # Google OAuth
+      - SCHEDLOCK_GOOGLE_CLIENT_ID=${SCHEDLOCK_GOOGLE_CLIENT_ID}
+      - SCHEDLOCK_GOOGLE_CLIENT_SECRET=${SCHEDLOCK_GOOGLE_CLIENT_SECRET}
+
+      # Notifications - ntfy
+      - SCHEDLOCK_NTFY_ENABLED=${SCHEDLOCK_NTFY_ENABLED:-false}
+      - SCHEDLOCK_NTFY_TOPIC=${SCHEDLOCK_NTFY_TOPIC}
+      - SCHEDLOCK_NTFY_SERVER_URL=${SCHEDLOCK_NTFY_SERVER_URL:-https://ntfy.sh}
+      - SCHEDLOCK_NTFY_TOKEN=${SCHEDLOCK_NTFY_TOKEN}
+
+      # Notifications - Pushover
+      - SCHEDLOCK_PUSHOVER_ENABLED=${SCHEDLOCK_PUSHOVER_ENABLED:-false}
+      - SCHEDLOCK_PUSHOVER_TOKEN=${SCHEDLOCK_PUSHOVER_TOKEN}
+      - SCHEDLOCK_PUSHOVER_USER_KEY=${SCHEDLOCK_PUSHOVER_USER_KEY}
+
+      # Notifications - Telegram
+      - SCHEDLOCK_TELEGRAM_ENABLED=${SCHEDLOCK_TELEGRAM_ENABLED:-false}
+      - SCHEDLOCK_TELEGRAM_BOT_TOKEN=${SCHEDLOCK_TELEGRAM_BOT_TOKEN}
+      - SCHEDLOCK_TELEGRAM_CHAT_ID=${SCHEDLOCK_TELEGRAM_CHAT_ID}
+
+      # Moltbot webhook
+      - SCHEDLOCK_MOLTBOT_WEBHOOK_URL=${SCHEDLOCK_MOLTBOT_WEBHOOK_URL}
+      - SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET=${SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET}
+
+      # Logging
+      - SCHEDLOCK_LOG_LEVEL=${SCHEDLOCK_LOG_LEVEL:-info}
+      - SCHEDLOCK_LOG_FORMAT=${SCHEDLOCK_LOG_FORMAT:-json}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Cloudflare Tunnel for public access
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: schedlock-tunnel
+  #   restart: unless-stopped
+  #   command: tunnel run
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - schedlock
+
+  # Optional: Litestream for continuous SQLite backup
+  # litestream:
+  #   image: litestream/litestream:0.3
+  #   container_name: schedlock-litestream
+  #   restart: unless-stopped
+  #   volumes:
+  #     - schedlock_data:/app/data
+  #     - ./litestream.yml:/etc/litestream.yml:ro
+  #   command: replicate
+  #   depends_on:
+  #     - schedlock
+
+volumes:
+  schedlock_data:

@@ -1,0 +1,142 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-6">
+        <a href="/pending" class="text-indigo-600 hover:text-indigo-900">&larr; Back to pending</a>
+    </div>
+
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">
+                        {{statusIcon .Request.Status}} Request Details
+                    </h3>
+                    <p class="mt-1 max-w-2xl text-sm text-gray-500 font-mono">{{.Request.ID}}</p>
+                </div>
+                <span class="px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full {{statusClass .Request.Status}}">
+                    {{.Request.Status}}
+                </span>
+            </div>
+        </div>
+
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Operation</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Request.Operation}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">API Key</dt>
+                    <dd class="mt-1 text-sm text-gray-900 font-mono">{{.Request.APIKeyID}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.CreatedAt}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Expires</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.ExpiresAt}}</dd>
+                </div>
+                {{if .Request.DecidedAt.Valid}}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Decided At</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.DecidedAt.Time}}</dd>
+                </div>
+                {{end}}
+                {{if .Request.DecidedBy.Valid}}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Decided By</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Request.DecidedBy.String}}</dd>
+                </div>
+                {{end}}
+            </dl>
+
+            <!-- Payload -->
+            <div class="mt-6">
+                <h4 class="text-sm font-medium text-gray-500 mb-2">Request Payload</h4>
+                <pre class="bg-gray-50 rounded-lg p-4 text-sm overflow-x-auto">{{formatJSON .Payload}}</pre>
+            </div>
+
+            {{if .Request.SuggestionText.Valid}}
+            <div class="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <h4 class="text-sm font-medium text-yellow-800 mb-2">📝 Suggested Change</h4>
+                <p class="text-sm text-yellow-700">{{.Request.SuggestionText.String}}</p>
+                <p class="mt-2 text-xs text-yellow-600">
+                    Suggested by {{.Request.SuggestionBy.String}} at {{formatTime .Request.SuggestionAt.Time}}
+                </p>
+            </div>
+            {{end}}
+
+            {{if .Request.Error.Valid}}
+            <div class="mt-6 bg-red-50 border border-red-200 rounded-lg p-4">
+                <h4 class="text-sm font-medium text-red-800 mb-2">❌ Error</h4>
+                <p class="text-sm text-red-700">{{.Request.Error.String}}</p>
+            </div>
+            {{end}}
+
+            {{if .Request.Result}}
+            <div class="mt-6">
+                <h4 class="text-sm font-medium text-gray-500 mb-2">Result</h4>
+                <pre class="bg-green-50 rounded-lg p-4 text-sm overflow-x-auto">{{formatJSON .Request.Result}}</pre>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Actions -->
+        {{if eq .Request.Status "pending_approval"}}
+        <div class="px-4 py-4 sm:px-6 bg-gray-50 border-t border-gray-200">
+            <div class="flex flex-wrap gap-4">
+                <form action="/requests/{{.Request.ID}}/approve" method="POST">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded font-medium">
+                        ✅ Approve Request
+                    </button>
+                </form>
+                <form action="/requests/{{.Request.ID}}/deny" method="POST">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded font-medium">
+                        ❌ Deny Request
+                    </button>
+                </form>
+            </div>
+
+            <!-- Suggest Change Form -->
+            <div class="mt-4">
+                <form action="/requests/{{.Request.ID}}/suggest" method="POST" class="flex gap-2">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="text" name="suggestion" placeholder="Suggest a change..."
+                           class="flex-1 rounded border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
+                    <button type="submit" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded font-medium">
+                        📝 Suggest Change
+                    </button>
+                </form>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Audit Log -->
+    {{if .AuditEntries}}
+    <div class="mt-6 bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Audit Log</h3>
+        </div>
+        <ul class="divide-y divide-gray-200">
+            {{range .AuditEntries}}
+            <li class="px-4 py-3 sm:px-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <span class="text-sm font-medium text-gray-900">{{.EventType}}</span>
+                        <span class="ml-2 text-sm text-gray-500">by {{.Actor}}</span>
+                    </div>
+                    <span class="text-sm text-gray-500">{{formatTime .Timestamp}}</span>
+                </div>
+            </li>
+            {{end}}
+        </ul>
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+{{template "layout" .}}

@@ -1,0 +1,101 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Settings</h1>
+
+    <!-- Google Calendar Connection -->
+    <div class="bg-white shadow rounded-lg p-6 mb-6">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">📅 Google Calendar</h2>
+        {{if .OAuthConnected}}
+        <div class="flex items-center justify-between">
+            <div class="flex items-center">
+                <span class="text-green-500 text-2xl mr-3">✓</span>
+                <div>
+                    <p class="text-sm font-medium text-gray-900">Connected</p>
+                    <p class="text-sm text-gray-500">Google Calendar is configured and ready.</p>
+                </div>
+            </div>
+            <a href="/oauth/start" class="text-indigo-600 hover:text-indigo-900 text-sm">Reconnect</a>
+        </div>
+        {{else}}
+        <div class="flex items-center justify-between">
+            <div class="flex items-center">
+                <span class="text-yellow-500 text-2xl mr-3">⚠</span>
+                <div>
+                    <p class="text-sm font-medium text-gray-900">Not Connected</p>
+                    <p class="text-sm text-gray-500">Connect to Google Calendar to enable calendar operations.</p>
+                </div>
+            </div>
+            <a href="/oauth/start" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
+                Connect Google Calendar
+            </a>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Notification Providers -->
+    <div class="bg-white shadow rounded-lg p-6 mb-6">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">🔔 Notification Providers</h2>
+
+        <div class="space-y-4">
+            {{range .Providers}}
+            <div class="flex items-center justify-between py-3 border-b border-gray-100 last:border-0">
+                <div class="flex items-center">
+                    {{if .Enabled}}
+                    <span class="text-green-500 text-xl mr-3">✓</span>
+                    {{else}}
+                    <span class="text-gray-300 text-xl mr-3">○</span>
+                    {{end}}
+                    <div>
+                        <p class="text-sm font-medium text-gray-900">{{.Name}}</p>
+                        <p class="text-xs text-gray-500">
+                            {{if .Enabled}}Enabled{{else}}Not configured{{end}}
+                        </p>
+                    </div>
+                </div>
+                {{if .Enabled}}
+                <form action="/settings/test-notification" method="POST" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="provider" value="{{.Name}}">
+                    <button type="submit" class="text-indigo-600 hover:text-indigo-900 text-sm">
+                        Send Test
+                    </button>
+                </form>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+
+        <div class="mt-4 p-4 bg-gray-50 rounded-lg">
+            <p class="text-sm text-gray-600">
+                Configure notification providers via environment variables. See the documentation for details.
+            </p>
+        </div>
+    </div>
+
+    <!-- Configuration Info -->
+    <div class="bg-white shadow rounded-lg p-6">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">⚙️ Configuration</h2>
+
+        <dl class="space-y-3 text-sm">
+            <div class="flex justify-between py-2 border-b border-gray-100">
+                <dt class="text-gray-500">Approval Timeout</dt>
+                <dd class="text-gray-900">{{.Config.Approval.TimeoutMinutes}} minutes</dd>
+            </div>
+            <div class="flex justify-between py-2 border-b border-gray-100">
+                <dt class="text-gray-500">Base URL</dt>
+                <dd class="text-gray-900 font-mono text-xs">{{.Config.Server.BaseURL}}</dd>
+            </div>
+            <div class="flex justify-between py-2 border-b border-gray-100">
+                <dt class="text-gray-500">Log Level</dt>
+                <dd class="text-gray-900">{{.Config.Log.Level}}</dd>
+            </div>
+            <div class="flex justify-between py-2">
+                <dt class="text-gray-500">Data Retention (Requests)</dt>
+                <dd class="text-gray-900">{{.Config.Retention.RequestDays}} days</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}
+
+{{template "layout" .}}

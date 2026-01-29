@@ -1,0 +1,50 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+schedlock
+
+# Test binaries
+*.test
+*.test.exe
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Claude Code project files
+.claude/
+
+# Build artifacts
+dist/
+build/
+
+# Log files
+*.log
+logs/

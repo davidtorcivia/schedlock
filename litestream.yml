@@ -1,0 +1,23 @@
+# Litestream configuration for continuous SQLite backup
+# See: https://litestream.io/reference/config/
+
+dbs:
+  - path: /app/data/schedlock.db
+    replicas:
+      # S3-compatible storage (e.g., AWS S3, Backblaze B2, MinIO)
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: schedlock
+        endpoint: ${LITESTREAM_ENDPOINT}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        retention: 24h
+        retention-check-interval: 1h
+        sync-interval: 1s
+        snapshot-interval: 24h
+
+      # Alternative: Local file replica (for testing)
+      # - path: /backups/schedlock
+
+# Restore command (run before starting main app):
+# litestream restore -config /etc/litestream.yml /app/data/schedlock.db

@@ -1,0 +1,142 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Dashboard</h1>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-3xl">⏳</span>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Pending Approval</dt>
+                            <dd class="text-lg font-semibold text-gray-900">{{.PendingCount}}</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-5 py-3">
+                <a href="/pending" class="text-sm font-medium text-indigo-600 hover:text-indigo-900">View all</a>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-3xl">📊</span>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Today's Requests</dt>
+                            <dd class="text-lg font-semibold text-gray-900">{{if .Stats}}{{.Stats.TotalToday}}{{else}}0{{end}}</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-5 py-3">
+                <a href="/history" class="text-sm font-medium text-indigo-600 hover:text-indigo-900">View history</a>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-3xl">🔑</span>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Active API Keys</dt>
+                            <dd class="text-lg font-semibold text-gray-900">
+                                {{if .APIKeyStats}}
+                                    {{range $tier, $count := .APIKeyStats}}{{$count}}{{end}}
+                                {{else}}0{{end}}
+                            </dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-5 py-3">
+                <a href="/apikeys" class="text-sm font-medium text-indigo-600 hover:text-indigo-900">Manage keys</a>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-3xl">⚙️</span>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Settings</dt>
+                            <dd class="text-lg font-semibold text-gray-900">Configure</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-5 py-3">
+                <a href="/settings" class="text-sm font-medium text-indigo-600 hover:text-indigo-900">Open settings</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pending Requests -->
+    {{if .PendingRequests}}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Pending Approvals</h3>
+        </div>
+        <ul class="divide-y divide-gray-200">
+            {{range .PendingRequests}}
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex items-center justify-between">
+                    <div class="flex-1">
+                        <div class="flex items-center">
+                            <span class="text-xl mr-2">{{statusIcon .Status}}</span>
+                            <p class="text-sm font-medium text-indigo-600 truncate">{{.Operation}}</p>
+                            <span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full {{statusClass .Status}}">
+                                {{.Status}}
+                            </span>
+                        </div>
+                        <p class="mt-1 text-sm text-gray-500">
+                            Created {{formatTime .CreatedAt}} · Expires {{formatTime .ExpiresAt}}
+                        </p>
+                    </div>
+                    <div class="ml-4 flex-shrink-0 flex space-x-2">
+                        <form action="/requests/{{.ID}}/approve" method="POST" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+                                Approve
+                            </button>
+                        </form>
+                        <form action="/requests/{{.ID}}/deny" method="POST" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm">
+                                Deny
+                            </button>
+                        </form>
+                        <a href="/requests/{{.ID}}" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded text-sm">
+                            Details
+                        </a>
+                    </div>
+                </div>
+            </li>
+            {{end}}
+        </ul>
+    </div>
+    {{else}}
+    <div class="bg-white shadow rounded-lg p-8 text-center">
+        <span class="text-6xl">✨</span>
+        <h3 class="mt-4 text-lg font-medium text-gray-900">All caught up!</h3>
+        <p class="mt-2 text-sm text-gray-500">No pending approval requests.</p>
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+{{template "layout" .}}
