@@ -1,59 +1,131 @@
 {{define "layout"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} - SchedLock</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <style>
-        .key-display {
-            display: block;
-            padding: 12px;
-            background: #1a1a2e;
-            color: #00ff00;
-            font-family: monospace;
-            font-size: 14px;
-            border-radius: 6px;
-            word-break: break-all;
-            margin-top: 8px;
-        }
-    </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body>
     {{if .Session}}
-    <nav class="bg-white shadow-sm border-b">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex">
-                    <div class="flex-shrink-0 flex items-center">
-                        <span class="text-xl font-bold text-indigo-600">SchedLock</span>
-                    </div>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="/" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Dashboard</a>
-                        <a href="/pending" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Pending</a>
-                        <a href="/history" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">History</a>
-                        <a href="/apikeys" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">API Keys</a>
-                        <a href="/settings" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Settings</a>
-                    </div>
+    <header class="app-header">
+        <div class="container">
+            <a href="/" class="app-brand">Sched<span>Lock</span></a>
+            
+            <nav class="app-nav">
+                <a href="/" class="nav-link {{if eq .Title "Dashboard"}}active{{end}}">Dashboard</a>
+                <a href="/pending" class="nav-link {{if eq .Title "Pending Approvals"}}active{{end}}">Pending</a>
+                <a href="/history" class="nav-link {{if eq .Title "Audit History"}}active{{end}}">History</a>
+                <a href="/apikeys" class="nav-link {{if eq .Title "API Keys"}}active{{end}}">API Keys</a>
+                <a href="/settings" class="nav-link {{if eq .Title "Settings"}}active{{end}}">Settings</a>
+            </nav>
+            
+            <div style="display: flex; align-items: center; gap: var(--space-4);">
+                <!-- Theme Toggle -->
+                <div class="theme-toggle">
+                    <button type="button" data-theme-value="light" title="Light theme">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+                        </svg>
+                    </button>
+                    <button type="button" data-theme-value="dark" title="Dark theme">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                        </svg>
+                    </button>
+                    <button type="button" data-theme-value="system" title="System theme">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />
+                        </svg>
+                    </button>
                 </div>
-                <div class="flex items-center">
-                    <form action="/logout" method="POST">
-                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                        <button type="submit" class="text-gray-500 hover:text-gray-700 text-sm">Logout</button>
-                    </form>
-                </div>
+                
+                <form action="/logout" method="POST" style="display: inline;">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+                </form>
+                
+                <button type="button" class="mobile-menu-btn" aria-label="Toggle menu" onclick="toggleMobileMenu()">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="menu-icon">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="close-icon" style="display: none;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
             </div>
         </div>
-    </nav>
+        
+        <!-- Mobile Navigation -->
+        <nav class="mobile-nav" id="mobileNav">
+            <a href="/" class="nav-link {{if eq .Title "Dashboard"}}active{{end}}">Dashboard</a>
+            <a href="/pending" class="nav-link {{if eq .Title "Pending Approvals"}}active{{end}}">Pending</a>
+            <a href="/history" class="nav-link {{if eq .Title "Audit History"}}active{{end}}">History</a>
+            <a href="/apikeys" class="nav-link {{if eq .Title "API Keys"}}active{{end}}">API Keys</a>
+            <a href="/settings" class="nav-link {{if eq .Title "Settings"}}active{{end}}">Settings</a>
+        </nav>
+    </header>
     {{end}}
 
-    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {{template "content" .}}
+    <main class="app-main">
+        <div class="container">
+            {{template "content" .}}
+        </div>
     </main>
 
     <script>
+        // Theme management
+        (function() {
+            const html = document.documentElement;
+            const themeButtons = document.querySelectorAll('[data-theme-value]');
+            
+            // Load saved theme or default to system
+            const savedTheme = localStorage.getItem('schedlock-theme') || 'system';
+            html.setAttribute('data-theme', savedTheme);
+            updateThemeButtons(savedTheme);
+            
+            // Theme button click handlers
+            themeButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const theme = btn.getAttribute('data-theme-value');
+                    html.setAttribute('data-theme', theme);
+                    localStorage.setItem('schedlock-theme', theme);
+                    updateThemeButtons(theme);
+                });
+            });
+            
+            function updateThemeButtons(activeTheme) {
+                themeButtons.forEach(btn => {
+                    if (btn.getAttribute('data-theme-value') === activeTheme) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+            }
+        })();
+        
+        // Mobile menu toggle
+        function toggleMobileMenu() {
+            const mobileNav = document.getElementById('mobileNav');
+            const menuIcon = document.querySelector('.menu-icon');
+            const closeIcon = document.querySelector('.close-icon');
+            
+            mobileNav.classList.toggle('open');
+            if (mobileNav.classList.contains('open')) {
+                menuIcon.style.display = 'none';
+                closeIcon.style.display = 'block';
+            } else {
+                menuIcon.style.display = 'block';
+                closeIcon.style.display = 'none';
+            }
+        }
+        
         // HTMX CSRF setup
         document.body.addEventListener('htmx:configRequest', function(evt) {
             evt.detail.headers['X-CSRF-Token'] = '{{.CSRFToken}}';

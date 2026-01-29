@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,18 +25,19 @@ import (
 
 // Handler provides web UI handlers.
 type Handler struct {
-	config          *config.Config
-	templates       *template.Template
-	sessionMgr      *SessionManager
-	loginLimiter    *LoginLimiter
-	settingsStore   *settings.Store
-	requestRepo     *requests.Repository
-	apiKeyRepo      *apikeys.Repository
-	tokenRepo       *tokens.Repository
-	engine          *engine.Engine
-	oauthMgr        *google.OAuthManager
-	notificationMgr *notifications.Manager
-	auditLogger     *engine.AuditLogger
+	config           *config.Config
+	templates        *template.Template
+	sessionMgr       *SessionManager
+	loginLimiter     *LoginLimiter
+	settingsStore    *settings.Store
+	credentialsStore *notifications.CredentialsStore
+	requestRepo      *requests.Repository
+	apiKeyRepo       *apikeys.Repository
+	tokenRepo        *tokens.Repository
+	engine           *engine.Engine
+	oauthMgr         *google.OAuthManager
+	notificationMgr  *notifications.Manager
+	auditLogger      *engine.AuditLogger
 }
 
 // NewHandler creates a new web handler.
@@ -46,6 +48,7 @@ func NewHandler(
 	apiKeyRepo *apikeys.Repository,
 	tokenRepo *tokens.Repository,
 	settingsStore *settings.Store,
+	credentialsStore *notifications.CredentialsStore,
 	eng *engine.Engine,
 	oauthMgr *google.OAuthManager,
 	notificationMgr *notifications.Manager,
@@ -58,22 +61,24 @@ func NewHandler(
 	}
 
 	return &Handler{
-		config:          cfg,
-		templates:       tmpl,
-		sessionMgr:      sessionMgr,
-		loginLimiter:    NewLoginLimiter(10, 10*time.Minute),
-		settingsStore:   settingsStore,
-		requestRepo:     requestRepo,
-		apiKeyRepo:      apiKeyRepo,
-		tokenRepo:       tokenRepo,
-		engine:          eng,
-		oauthMgr:        oauthMgr,
-		notificationMgr: notificationMgr,
-		auditLogger:     auditLogger,
+		config:           cfg,
+		templates:        tmpl,
+		sessionMgr:       sessionMgr,
+		loginLimiter:     NewLoginLimiter(10, 10*time.Minute),
+		settingsStore:    settingsStore,
+		credentialsStore: credentialsStore,
+		requestRepo:      requestRepo,
+		apiKeyRepo:       apiKeyRepo,
+		tokenRepo:        tokenRepo,
+		engine:           eng,
+		oauthMgr:         oauthMgr,
+		notificationMgr:  notificationMgr,
+		auditLogger:      auditLogger,
 	}, nil
 }
 
 // loadTemplates loads all HTML templates.
+// Each page is loaded separately with its own copy of the layout to avoid name collisions.
 func loadTemplates(dir string) (*template.Template, error) {
 	formatter := util.GetDefaultFormatter()
 	funcMap := template.FuncMap{
@@ -135,8 +140,57 @@ func loadTemplates(dir string) (*template.Template, error) {
 		},
 	}
 
-	pattern := filepath.Join(dir, "*.html")
-	return template.New("").Funcs(funcMap).ParseGlob(pattern)
+	// Create root template collection
+	root := template.New("root").Funcs(funcMap)
+
+	// Read the layout template
+	layoutPath := filepath.Join(dir, "layout.html")
+	layoutContent, err := os.ReadFile(layoutPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read layout: %w", err)
+	}
+
+	// List of page templates
+	pageFiles := []string{
+		"login.html", "dashboard.html", "pending.html", "detail.html",
+		"history.html", "apikeys.html", "settings.html", "oauth.html",
+	}
+
+	for _, page := range pageFiles {
+		pagePath := filepath.Join(dir, page)
+		pageContent, err := os.ReadFile(pagePath)
+		if err != nil {
+			continue // Skip missing templates
+		}
+
+		// Extract just the content between {{define "content"}} and {{end}}
+		// and the {{template "layout" .}} call
+		pageStr := string(pageContent)
+
+		// Remove the {{template "layout" .}} line - we'll call the layout ourselves
+		pageStr = strings.Replace(pageStr, `{{template "layout" .}}`, "", 1)
+
+		// Rename the content block to be page-specific
+		pageStr = strings.Replace(pageStr, `{{define "content"}}`, fmt.Sprintf(`{{define "content-%s"}}`, page), 1)
+
+		// Create page-specific layout
+		layoutStr := string(layoutContent)
+		layoutStr = strings.Replace(layoutStr, `{{define "layout"}}`, fmt.Sprintf(`{{define "%s"}}`, page), 1)
+		layoutStr = strings.Replace(layoutStr, `{{template "content" .}}`, fmt.Sprintf(`{{template "content-%s" .}}`, page), 1)
+
+		// Parse both into root
+		_, err = root.Parse(layoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse layout for %s: %w", page, err)
+		}
+
+		_, err = root.Parse(pageStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse page %s: %w", page, err)
+		}
+	}
+
+	return root, nil
 }
 
 // render renders a template with common data.
@@ -184,7 +238,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.render(w, r, "login.html", nil)
+	h.render(w, r, "login.html", map[string]interface{}{
+		"Title": "Sign In",
+	})
 }
 
 // LoginSubmit handles login form submission.
@@ -194,6 +250,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if h.loginLimiter != nil && !h.loginLimiter.Allow(ip) {
 		h.render(w, r, "login.html", map[string]interface{}{
+			"Title": "Sign In",
 			"Error": "Too many login attempts. Please wait and try again.",
 		})
 		return
@@ -201,6 +258,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if !h.sessionMgr.VerifyPassword(password) {
 		h.render(w, r, "login.html", map[string]interface{}{
+			"Title": "Sign In",
 			"Error": "Invalid password",
 		})
 		return
@@ -216,6 +274,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 	session, err := h.sessionMgr.CreateSession(r.Context(), "admin", ipAddress, userAgent)
 	if err != nil {
 		h.render(w, r, "login.html", map[string]interface{}{
+			"Title": "Sign In",
 			"Error": "Failed to create session",
 		})
 		return
@@ -258,6 +317,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	pending, _ := h.requestRepo.GetPending(ctx)
 
 	h.render(w, r, "dashboard.html", map[string]interface{}{
+		"Title":           "Dashboard",
 		"Stats":           stats,
 		"APIKeyStats":     apiKeyStats,
 		"APIKeyTotal":     totalAPIKeys,
@@ -272,6 +332,7 @@ func (h *Handler) PendingRequests(w http.ResponseWriter, r *http.Request) {
 	pending, _ := h.requestRepo.GetPending(ctx)
 
 	h.render(w, r, "pending.html", map[string]interface{}{
+		"Title":    "Pending Approvals",
 		"Requests": pending,
 	})
 }
@@ -299,6 +360,7 @@ func (h *Handler) RequestDetail(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(req.Payload, &payload)
 
 	h.render(w, r, "detail.html", map[string]interface{}{
+		"Title":        "Request Details",
 		"Request":      req,
 		"Payload":      payload,
 		"AuditEntries": auditEntries,
@@ -384,6 +446,7 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 	entries, _ := h.auditLogger.GetRecent(ctx, 100)
 
 	h.render(w, r, "history.html", map[string]interface{}{
+		"Title":   "Audit History",
 		"Entries": entries,
 	})
 }
@@ -394,7 +457,8 @@ func (h *Handler) APIKeys(w http.ResponseWriter, r *http.Request) {
 	keys, _ := h.apiKeyRepo.List(ctx, false)
 
 	h.render(w, r, "apikeys.html", map[string]interface{}{
-		"Keys": keys,
+		"Title": "API Keys",
+		"Keys":  keys,
 	})
 }
 
@@ -457,18 +521,184 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/apikeys", http.StatusSeeOther)
 }
 
+// NotificationConfigView holds notification config for template rendering.
+type NotificationConfigView struct {
+	Enabled  bool
+	Server   string
+	Topic    string
+	Token    string
+	Priority interface{} // string for ntfy, int for pushover
+	Sound    string
+	AppToken string
+	UserKey  string
+	BotToken string
+	ChatID   string
+	WebhookSecret string
+}
+
 // Settings shows settings page.
 func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	providers := h.notificationMgr.GetProviders()
 	oauthConnected := h.oauthMgr.IsAuthenticated()
 	updated := r.URL.Query().Get("updated") == "1"
+	notificationsUpdated := r.URL.Query().Get("notifications_updated") == "1"
+
+	// Load notification credentials from database
+	ntfyConfig := NotificationConfigView{Server: "https://ntfy.sh", Priority: "high"}
+	pushoverConfig := NotificationConfigView{Priority: 1, Sound: "pushover"}
+	telegramConfig := NotificationConfigView{}
+
+	if h.credentialsStore != nil {
+		if creds, _ := h.credentialsStore.Load(ctx, "ntfy"); creds != nil {
+			ntfyConfig.Enabled = creds.Enabled
+			if nc, ok := creds.Credentials.(*notifications.NtfyCredentials); ok && nc != nil {
+				ntfyConfig.Server = nc.ServerURL
+				ntfyConfig.Topic = nc.Topic
+				ntfyConfig.Token = nc.Token
+				ntfyConfig.Priority = nc.Priority
+			}
+		}
+		if creds, _ := h.credentialsStore.Load(ctx, "pushover"); creds != nil {
+			pushoverConfig.Enabled = creds.Enabled
+			if pc, ok := creds.Credentials.(*notifications.PushoverCredentials); ok && pc != nil {
+				pushoverConfig.AppToken = pc.AppToken
+				pushoverConfig.UserKey = pc.UserKey
+				pushoverConfig.Priority = pc.Priority
+				pushoverConfig.Sound = pc.Sound
+			}
+		}
+		if creds, _ := h.credentialsStore.Load(ctx, "telegram"); creds != nil {
+			telegramConfig.Enabled = creds.Enabled
+			if tc, ok := creds.Credentials.(*notifications.TelegramCredentials); ok && tc != nil {
+				telegramConfig.BotToken = tc.BotToken
+				telegramConfig.ChatID = tc.ChatID
+				telegramConfig.WebhookSecret = tc.WebhookSecret
+			}
+		}
+	}
+
+	// Fall back to env config if no DB config
+	if !ntfyConfig.Enabled && h.config.Notifications.Ntfy.Enabled {
+		ntfyConfig.Enabled = true
+		ntfyConfig.Server = h.config.Notifications.Ntfy.Server
+		ntfyConfig.Topic = h.config.Notifications.Ntfy.Topic
+		ntfyConfig.Token = h.config.Notifications.Ntfy.Token
+		ntfyConfig.Priority = h.config.Notifications.Ntfy.Priority
+	}
+	if !pushoverConfig.Enabled && h.config.Notifications.Pushover.Enabled {
+		pushoverConfig.Enabled = true
+		pushoverConfig.AppToken = h.config.Notifications.Pushover.AppToken
+		pushoverConfig.UserKey = h.config.Notifications.Pushover.UserKey
+		pushoverConfig.Priority = h.config.Notifications.Pushover.Priority
+		pushoverConfig.Sound = h.config.Notifications.Pushover.Sound
+	}
+	if !telegramConfig.Enabled && h.config.Notifications.Telegram.Enabled {
+		telegramConfig.Enabled = true
+		telegramConfig.BotToken = h.config.Notifications.Telegram.BotToken
+		telegramConfig.ChatID = h.config.Notifications.Telegram.ChatID
+		telegramConfig.WebhookSecret = h.config.Notifications.Telegram.WebhookSecret
+	}
 
 	h.render(w, r, "settings.html", map[string]interface{}{
-		"Providers":      providers,
-		"OAuthConnected": oauthConnected,
-		"Config":         h.config,
-		"Updated":        updated,
+		"Title":                "Settings",
+		"Providers":            providers,
+		"OAuthConnected":       oauthConnected,
+		"Config":               h.config,
+		"Updated":              updated,
+		"NotificationsUpdated": notificationsUpdated,
+		"NtfyConfig":           ntfyConfig,
+		"PushoverConfig":       pushoverConfig,
+		"TelegramConfig":       telegramConfig,
 	})
+}
+
+// SaveNotificationSettings handles notification provider configuration.
+func (h *Handler) SaveNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	if h.credentialsStore == nil {
+		http.Error(w, "credentials store unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Save ntfy config
+	ntfyEnabled := r.FormValue("ntfy_enabled") == "on"
+	if ntfyEnabled {
+		ntfyCreds := &notifications.NtfyCredentials{
+			ServerURL:      strings.TrimSpace(r.FormValue("ntfy_server")),
+			Topic:          strings.TrimSpace(r.FormValue("ntfy_topic")),
+			Token:          strings.TrimSpace(r.FormValue("ntfy_token")),
+			Priority:       strings.TrimSpace(r.FormValue("ntfy_priority")),
+		}
+		if ntfyCreds.ServerURL == "" {
+			ntfyCreds.ServerURL = "https://ntfy.sh"
+		}
+		if ntfyCreds.Topic == "" {
+			h.renderSettingsError(w, r, "ntfy topic is required when ntfy is enabled")
+			return
+		}
+		if err := h.credentialsStore.Save(ctx, "ntfy", true, ntfyCreds); err != nil {
+			h.renderSettingsError(w, r, "failed to save ntfy credentials")
+			return
+		}
+	} else {
+		h.credentialsStore.Save(ctx, "ntfy", false, &notifications.NtfyCredentials{})
+	}
+
+	// Save Pushover config
+	pushoverEnabled := r.FormValue("pushover_enabled") == "on"
+	if pushoverEnabled {
+		priority, _ := strconv.Atoi(r.FormValue("pushover_priority"))
+		pushoverCreds := &notifications.PushoverCredentials{
+			AppToken: strings.TrimSpace(r.FormValue("pushover_app_token")),
+			UserKey:  strings.TrimSpace(r.FormValue("pushover_user_key")),
+			Priority: priority,
+			Sound:    strings.TrimSpace(r.FormValue("pushover_sound")),
+		}
+		if pushoverCreds.AppToken == "" || pushoverCreds.UserKey == "" {
+			h.renderSettingsError(w, r, "Pushover app token and user key are required")
+			return
+		}
+		if err := h.credentialsStore.Save(ctx, "pushover", true, pushoverCreds); err != nil {
+			h.renderSettingsError(w, r, "failed to save Pushover credentials")
+			return
+		}
+	} else {
+		h.credentialsStore.Save(ctx, "pushover", false, &notifications.PushoverCredentials{})
+	}
+
+	// Save Telegram config
+	telegramEnabled := r.FormValue("telegram_enabled") == "on"
+	if telegramEnabled {
+		telegramCreds := &notifications.TelegramCredentials{
+			BotToken:      strings.TrimSpace(r.FormValue("telegram_bot_token")),
+			ChatID:        strings.TrimSpace(r.FormValue("telegram_chat_id")),
+			WebhookSecret: strings.TrimSpace(r.FormValue("telegram_webhook_secret")),
+		}
+		if telegramCreds.BotToken == "" || telegramCreds.ChatID == "" {
+			h.renderSettingsError(w, r, "Telegram bot token and chat ID are required")
+			return
+		}
+		if err := h.credentialsStore.Save(ctx, "telegram", true, telegramCreds); err != nil {
+			h.renderSettingsError(w, r, "failed to save Telegram credentials")
+			return
+		}
+	} else {
+		h.credentialsStore.Save(ctx, "telegram", false, &notifications.TelegramCredentials{})
+	}
+
+	// Audit log
+	if h.auditLogger != nil {
+		h.auditLogger.Log(ctx, database.AuditSettingsChanged, "", "", "web:admin", map[string]interface{}{
+			"notification_settings_updated": true,
+			"ntfy_enabled":                  ntfyEnabled,
+			"pushover_enabled":              pushoverEnabled,
+			"telegram_enabled":              telegramEnabled,
+		})
+	}
+
+	http.Redirect(w, r, "/settings?notifications_updated=1", http.StatusSeeOther)
 }
 
 // SaveSettings handles runtime settings updates from the web UI.
@@ -604,6 +834,7 @@ func (h *Handler) renderSettingsError(w http.ResponseWriter, r *http.Request, me
 	providers := h.notificationMgr.GetProviders()
 	oauthConnected := h.oauthMgr.IsAuthenticated()
 	h.render(w, r, "settings.html", map[string]interface{}{
+		"Title":          "Settings",
 		"Providers":      providers,
 		"OAuthConnected": oauthConnected,
 		"Config":         h.config,
@@ -652,6 +883,7 @@ func (h *Handler) OAuthStart(w http.ResponseWriter, r *http.Request) {
 	instructions := strings.Split(strings.TrimSpace(authInfo.Instructions), "\n")
 
 	h.render(w, r, "oauth.html", map[string]interface{}{
+		"Title":        "Connect Google Calendar",
 		"AuthURL":      authInfo.AuthURL,
 		"Instructions": instructions,
 		"State":        state,

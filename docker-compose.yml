@@ -6,7 +6,7 @@ services:
     container_name: schedlock
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8081:8080"
     volumes:
       - schedlock_data:/app/data
     environment:
@@ -17,7 +17,8 @@ services:
       # Security
       - SCHEDLOCK_SERVER_SECRET=${SCHEDLOCK_SERVER_SECRET:?Server secret is required}
       - SCHEDLOCK_ENCRYPTION_KEY=${SCHEDLOCK_ENCRYPTION_KEY:?Encryption key is required}
-      - SCHEDLOCK_AUTH_PASSWORD_HASH=${SCHEDLOCK_AUTH_PASSWORD_HASH:?Password hash is required}
+      - SCHEDLOCK_AUTH_PASSWORD_HASH=${SCHEDLOCK_AUTH_PASSWORD_HASH:-}
+      - SCHEDLOCK_ADMIN_PASSWORD=${SCHEDLOCK_ADMIN_PASSWORD:-}
 
       # Google OAuth
       - SCHEDLOCK_GOOGLE_CLIENT_ID=${SCHEDLOCK_GOOGLE_CLIENT_ID}

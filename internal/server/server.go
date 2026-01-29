@@ -98,6 +98,12 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	// Initialize engine
 	eng := engine.NewEngine(cfg, requestRepo, calendarClient, auditLogger, tokenRepo)
 
+	// Initialize notification credentials store
+	credentialsStore, err := notifications.NewCredentialsStore(db, cfg.Auth.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
 	// Initialize notification manager
 	notificationMgr := notifications.NewManager(db, cfg)
 
@@ -148,6 +154,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 		apiKeyRepo,
 		tokenRepo,
 		settingsStore,
+		credentialsStore,
 		eng,
 		oauthMgr,
 		notificationMgr,

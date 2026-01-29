@@ -1,140 +1,334 @@
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Settings</h1>
+<div class="page-header">
+    <h1>Settings</h1>
+    <p>Configure your calendar integration and system preferences</p>
+</div>
 
-    {{if .Error}}
-    <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
-        {{.Error}}
-    </div>
-    {{end}}
-    {{if .Updated}}
-    <div class="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded mb-6">
-        Settings updated.
-    </div>
-    {{end}}
+{{if .Error}}
+<div class="alert alert-error">
+    {{.Error}}
+</div>
+{{end}}
+{{if .Updated}}
+<div class="alert alert-success">
+    Settings updated successfully.
+</div>
+{{end}}
+{{if .NotificationsUpdated}}
+<div class="alert alert-success">
+    Notification settings updated successfully.
+</div>
+{{end}}
 
-    <!-- Google Calendar Connection -->
-    <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">Google Calendar</h2>
-        {{if .OAuthConnected}}
-        <div class="flex items-center justify-between">
+<!-- Google Calendar Connection -->
+<div class="card mb-8">
+    <div class="card-header">
+        <h3>Google Calendar</h3>
+        <p>Connect your Google Calendar account</p>
+    </div>
+    <div class="card-body">
+        <div class="flex items-center justify-between" style="flex-wrap: wrap; gap: var(--space-4);">
             <div>
-                <p class="text-sm font-medium text-gray-900">Connected</p>
-                <p class="text-sm text-gray-500">Google Calendar is configured and ready.</p>
+                <p style="font-weight: 500; color: var(--text-primary); margin-bottom: var(--space-1);">
+                    {{if .OAuthConnected}}
+                    <span style="display: inline-flex; align-items: center; gap: var(--space-2);">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 20px; height: 20px; color: var(--color-success-600);">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        Connected
+                    </span>
+                    {{else}}
+                    <span style="display: inline-flex; align-items: center; gap: var(--space-2);">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 20px; height: 20px; color: var(--text-muted);">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                        </svg>
+                        Not Connected
+                    </span>
+                    {{end}}
+                </p>
+                <p class="text-sm" style="margin: 0;">
+                    {{if .OAuthConnected}}
+                    Your Google Calendar is configured and ready for operations.
+                    {{else}}
+                    Connect to Google Calendar to enable calendar operations.
+                    {{end}}
+                </p>
             </div>
-            <a href="/oauth/start" class="text-indigo-600 hover:text-indigo-900 text-sm">Reconnect</a>
-        </div>
-        {{else}}
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm font-medium text-gray-900">Not Connected</p>
-                <p class="text-sm text-gray-500">Connect to Google Calendar to enable calendar operations.</p>
-            </div>
-            <a href="/oauth/start" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
-                Connect Google Calendar
-            </a>
-        </div>
-        {{end}}
-    </div>
-
-    <!-- Notification Providers -->
-    <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">Notification Providers</h2>
-
-        <div class="space-y-4">
-            {{range .Providers}}
-            <div class="flex items-center justify-between py-3 border-b border-gray-100 last:border-0">
-                <div>
-                    <p class="text-sm font-medium text-gray-900">{{.Name}}</p>
-                    <p class="text-xs text-gray-500">
-                        {{if .Enabled}}Enabled{{else}}Not configured{{end}}
-                    </p>
-                </div>
-                {{if .Enabled}}
-                <form action="/settings/test-notification" method="POST" class="inline">
-                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <input type="hidden" name="provider" value="{{.Name}}">
-                    <button type="submit" class="text-indigo-600 hover:text-indigo-900 text-sm">
-                        Send Test
-                    </button>
-                </form>
-                {{end}}
-            </div>
+            {{if .OAuthConnected}}
+            <a href="/oauth/start" class="btn btn-secondary">Reconnect Account</a>
+            {{else}}
+            <a href="/oauth/start" class="btn btn-primary">Connect Google Calendar</a>
             {{end}}
         </div>
-
-        <div class="mt-4 p-4 bg-gray-50 rounded-lg">
-            <p class="text-sm text-gray-600">
-                Configure notification providers via environment variables. See the documentation for details.
-            </p>
-        </div>
     </div>
+</div>
 
-    <!-- Runtime Settings -->
-    <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">Runtime Settings</h2>
-        <form action="/settings/save" method="POST" class="space-y-6">
+<!-- Notification Providers -->
+<div class="card mb-8">
+    <div class="card-header">
+        <h3>Notification Providers</h3>
+        <p>Configure how you receive approval notifications</p>
+    </div>
+    <div class="card-body">
+        <form action="/settings/notifications" method="POST">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
-            <div>
-                <h3 class="text-sm font-semibold text-gray-700 mb-2">Approval</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Timeout (minutes)</label>
-                        <input type="number" min="1" max="1440" name="approval_timeout_minutes" value="{{.Config.Approval.TimeoutMinutes}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+            <!-- ntfy -->
+            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <h5 style="margin: 0;">ntfy</h5>
+                        <span class="text-sm" style="color: var(--text-muted);">Push notifications via ntfy.sh</span>
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Default action</label>
-                        <select name="approval_default_action" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
-                            <option value="deny" {{if eq .Config.Approval.DefaultAction "deny"}}selected{{end}}>Deny</option>
-                            <option value="approve" {{if eq .Config.Approval.DefaultAction "approve"}}selected{{end}}>Approve</option>
+                    <div class="form-check" style="margin: 0;">
+                        <input type="checkbox" id="ntfy_enabled" name="ntfy_enabled" class="form-check-input"
+                               {{if .NtfyConfig.Enabled}}checked{{end}}
+                               onchange="document.getElementById('ntfy_fields').style.display = this.checked ? 'block' : 'none'">
+                        <label for="ntfy_enabled" class="form-check-label">Enable</label>
+                    </div>
+                </div>
+                <div id="ntfy_fields" style="{{if not .NtfyConfig.Enabled}}display: none;{{end}}">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Server URL</label>
+                            <input type="text" name="ntfy_server" value="{{.NtfyConfig.Server}}"
+                                   class="form-input" placeholder="https://ntfy.sh">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Topic <span style="color: var(--color-error-500);">*</span></label>
+                            <input type="text" name="ntfy_topic" value="{{.NtfyConfig.Topic}}"
+                                   class="form-input" placeholder="your-topic-name">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Access Token <small>(optional)</small></label>
+                            <input type="password" name="ntfy_token" value="{{.NtfyConfig.Token}}"
+                                   class="form-input" placeholder="tk_...">
+                            <p class="form-hint">Required for private topics</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Priority</label>
+                            <select name="ntfy_priority" class="form-select">
+                                <option value="default" {{if eq .NtfyConfig.Priority "default"}}selected{{end}}>Default</option>
+                                <option value="min" {{if eq .NtfyConfig.Priority "min"}}selected{{end}}>Min</option>
+                                <option value="low" {{if eq .NtfyConfig.Priority "low"}}selected{{end}}>Low</option>
+                                <option value="high" {{if eq .NtfyConfig.Priority "high"}}selected{{end}}>High</option>
+                                <option value="urgent" {{if eq .NtfyConfig.Priority "urgent"}}selected{{end}}>Urgent</option>
+                            </select>
+                        </div>
+                    </div>
+                    {{if .NtfyConfig.Enabled}}
+                    <div class="mt-4">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="testProvider('ntfy')">Send Test Notification</button>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Pushover -->
+            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <h5 style="margin: 0;">Pushover</h5>
+                        <span class="text-sm" style="color: var(--text-muted);">iOS/Android push notifications</span>
+                    </div>
+                    <div class="form-check" style="margin: 0;">
+                        <input type="checkbox" id="pushover_enabled" name="pushover_enabled" class="form-check-input"
+                               {{if .PushoverConfig.Enabled}}checked{{end}}
+                               onchange="document.getElementById('pushover_fields').style.display = this.checked ? 'block' : 'none'">
+                        <label for="pushover_enabled" class="form-check-label">Enable</label>
+                    </div>
+                </div>
+                <div id="pushover_fields" style="{{if not .PushoverConfig.Enabled}}display: none;{{end}}">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Application Token <span style="color: var(--color-error-500);">*</span></label>
+                            <input type="password" name="pushover_app_token" value="{{.PushoverConfig.AppToken}}"
+                                   class="form-input" placeholder="a...">
+                            <p class="form-hint">From pushover.net/apps</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">User Key <span style="color: var(--color-error-500);">*</span></label>
+                            <input type="password" name="pushover_user_key" value="{{.PushoverConfig.UserKey}}"
+                                   class="form-input" placeholder="u...">
+                            <p class="form-hint">Your Pushover user key</p>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Priority</label>
+                            <select name="pushover_priority" class="form-select">
+                                <option value="-2" {{if eq .PushoverConfig.Priority -2}}selected{{end}}>Lowest</option>
+                                <option value="-1" {{if eq .PushoverConfig.Priority -1}}selected{{end}}>Low</option>
+                                <option value="0" {{if eq .PushoverConfig.Priority 0}}selected{{end}}>Normal</option>
+                                <option value="1" {{if or (eq .PushoverConfig.Priority 1) (eq .PushoverConfig.Priority 0)}}selected{{end}}>High</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Sound</label>
+                            <input type="text" name="pushover_sound" value="{{.PushoverConfig.Sound}}"
+                                   class="form-input" placeholder="pushover">
+                        </div>
+                    </div>
+                    {{if .PushoverConfig.Enabled}}
+                    <div class="mt-4">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="testProvider('pushover')">Send Test Notification</button>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Telegram -->
+            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <h5 style="margin: 0;">Telegram</h5>
+                        <span class="text-sm" style="color: var(--text-muted);">Telegram bot notifications</span>
+                    </div>
+                    <div class="form-check" style="margin: 0;">
+                        <input type="checkbox" id="telegram_enabled" name="telegram_enabled" class="form-check-input"
+                               {{if .TelegramConfig.Enabled}}checked{{end}}
+                               onchange="document.getElementById('telegram_fields').style.display = this.checked ? 'block' : 'none'">
+                        <label for="telegram_enabled" class="form-check-label">Enable</label>
+                    </div>
+                </div>
+                <div id="telegram_fields" style="{{if not .TelegramConfig.Enabled}}display: none;{{end}}">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Bot Token <span style="color: var(--color-error-500);">*</span></label>
+                            <input type="password" name="telegram_bot_token" value="{{.TelegramConfig.BotToken}}"
+                                   class="form-input" placeholder="123456:ABC...">
+                            <p class="form-hint">From @BotFather</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Chat ID <span style="color: var(--color-error-500);">*</span></label>
+                            <input type="text" name="telegram_chat_id" value="{{.TelegramConfig.ChatID}}"
+                                   class="form-input" placeholder="-100...">
+                            <p class="form-hint">User or group chat ID</p>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Webhook Secret <small>(optional)</small></label>
+                            <input type="password" name="telegram_webhook_secret" value="{{.TelegramConfig.WebhookSecret}}"
+                                   class="form-input" placeholder="random-secret">
+                            <p class="form-hint">For securing incoming webhook callbacks</p>
+                        </div>
+                    </div>
+                    {{if .TelegramConfig.Enabled}}
+                    <div class="mt-4">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="testProvider('telegram')">Send Test Notification</button>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <div class="flex justify-end">
+                <button type="submit" class="btn btn-primary">Save Notification Settings</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function testProvider(provider) {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/settings/test-notification';
+
+    const csrfInput = document.createElement('input');
+    csrfInput.type = 'hidden';
+    csrfInput.name = 'csrf_token';
+    csrfInput.value = '{{.CSRFToken}}';
+    form.appendChild(csrfInput);
+
+    const providerInput = document.createElement('input');
+    providerInput.type = 'hidden';
+    providerInput.name = 'provider';
+    providerInput.value = provider;
+    form.appendChild(providerInput);
+
+    document.body.appendChild(form);
+    form.submit();
+}
+</script>
+
+<!-- Runtime Settings -->
+<div class="card mb-8">
+    <div class="card-header">
+        <h3>Runtime Settings</h3>
+        <p>Configure approval workflow and system behavior</p>
+    </div>
+    <div class="card-body">
+        <form action="/settings/save" method="POST">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div class="mb-8">
+                <h5 style="margin-bottom: var(--space-4);">Approval Settings</h5>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Timeout <small>(minutes)</small></label>
+                        <input type="number" min="1" max="1440" name="approval_timeout_minutes" 
+                               value="{{.Config.Approval.TimeoutMinutes}}"
+                               class="form-input">
+                        <p class="form-hint">How long before a request expires</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Default Action</label>
+                        <select name="approval_default_action" class="form-select">
+                            <option value="deny" {{if eq .Config.Approval.DefaultAction "deny"}}selected{{end}}>Deny on timeout</option>
+                            <option value="approve" {{if eq .Config.Approval.DefaultAction "approve"}}selected{{end}}>Approve on timeout</option>
                         </select>
+                        <p class="form-hint">Action when request expires</p>
                     </div>
                 </div>
             </div>
 
-            <div>
-                <h3 class="text-sm font-semibold text-gray-700 mb-2">Retention</h3>
-                <div class="flex items-center mb-3">
-                    <input id="retention_enabled" name="retention_enabled" type="checkbox" class="mr-2"
-                           {{if .Config.Retention.Enabled}}checked{{end}}>
-                    <label for="retention_enabled" class="text-sm text-gray-600">Enable retention cleanup</label>
+            <div class="mb-8">
+                <h5 style="margin-bottom: var(--space-4);">Data Retention</h5>
+                <div class="form-check mb-4">
+                    <input type="checkbox" id="retention_enabled" name="retention_enabled" 
+                           class="form-check-input" {{if .Config.Retention.Enabled}}checked{{end}}>
+                    <label for="retention_enabled" class="form-check-label">Enable automatic cleanup of old data</label>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Completed requests (days)</label>
-                        <input type="number" min="1" max="3650" name="retention_completed_days" value="{{.Config.Retention.CompletedRequestsDays}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                <div class="form-row three-col">
+                    <div class="form-group">
+                        <label class="form-label">Completed Requests <small>(days)</small></label>
+                        <input type="number" min="1" max="3650" name="retention_completed_days" 
+                               value="{{.Config.Retention.CompletedRequestsDays}}"
+                               class="form-input">
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Audit logs (days)</label>
-                        <input type="number" min="1" max="3650" name="retention_audit_days" value="{{.Config.Retention.AuditLogDays}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    <div class="form-group">
+                        <label class="form-label">Audit Logs <small>(days)</small></label>
+                        <input type="number" min="1" max="3650" name="retention_audit_days" 
+                               value="{{.Config.Retention.AuditLogDays}}"
+                               class="form-input">
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Webhook failures (days)</label>
-                        <input type="number" min="1" max="3650" name="retention_webhook_failures_days" value="{{.Config.Retention.WebhookFailuresDays}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    <div class="form-group">
+                        <label class="form-label">Webhook Failures <small>(days)</small></label>
+                        <input type="number" min="1" max="3650" name="retention_webhook_failures_days" 
+                               value="{{.Config.Retention.WebhookFailuresDays}}"
+                               class="form-input">
                     </div>
                 </div>
             </div>
 
-            <div>
-                <h3 class="text-sm font-semibold text-gray-700 mb-2">Logging</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Level</label>
-                        <select name="logging_level" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+            <div class="mb-8">
+                <h5 style="margin-bottom: var(--space-4);">Logging</h5>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Log Level</label>
+                        <select name="logging_level" class="form-select">
                             <option value="debug" {{if eq .Config.Logging.Level "debug"}}selected{{end}}>Debug</option>
                             <option value="info" {{if eq .Config.Logging.Level "info"}}selected{{end}}>Info</option>
                             <option value="warn" {{if eq .Config.Logging.Level "warn"}}selected{{end}}>Warn</option>
                             <option value="error" {{if eq .Config.Logging.Level "error"}}selected{{end}}>Error</option>
                         </select>
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Format</label>
-                        <select name="logging_format" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    <div class="form-group">
+                        <label class="form-label">Log Format</label>
+                        <select name="logging_format" class="form-select">
                             <option value="json" {{if eq .Config.Logging.Format "json"}}selected{{end}}>JSON</option>
                             <option value="text" {{if eq .Config.Logging.Format "text"}}selected{{end}}>Text</option>
                         </select>
@@ -142,60 +336,57 @@
                 </div>
             </div>
 
-            <div>
-                <h3 class="text-sm font-semibold text-gray-700 mb-2">Display</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Timezone</label>
+            <div class="mb-8">
+                <h5 style="margin-bottom: var(--space-4);">Display</h5>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Timezone</label>
                         <input type="text" name="display_timezone" value="{{.Config.Display.Timezone}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="America/New_York">
+                               class="form-input" placeholder="America/New_York">
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Date format</label>
+                    <div class="form-group">
+                        <label class="form-label">Date Format</label>
                         <input type="text" name="display_date_format" value="{{.Config.Display.DateFormat}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Jan 2, 2006">
+                               class="form-input" placeholder="Jan 2, 2006">
                     </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Time format</label>
+                    <div class="form-group">
+                        <label class="form-label">Time Format</label>
                         <input type="text" name="display_time_format" value="{{.Config.Display.TimeFormat}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="3:04 PM">
-                    </div>
-                    <div>
-                        <label class="block text-sm text-gray-600 mb-1">Datetime format</label>
-                        <input type="text" name="display_datetime_format" value="{{.Config.Display.DatetimeFormat}}"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="Jan 2, 2006 at 3:04 PM">
+                               class="form-input" placeholder="3:04 PM">
                     </div>
                 </div>
             </div>
 
             <div class="flex justify-end">
-                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
-                    Save Settings
-                </button>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
             </div>
         </form>
     </div>
+</div>
 
-    <!-- Configuration Info -->
-    <div class="bg-white shadow rounded-lg p-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">Configuration</h2>
-
-        <dl class="space-y-3 text-sm">
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <dt class="text-gray-500">Approval Timeout</dt>
-                <dd class="text-gray-900">{{.Config.Approval.TimeoutMinutes}} minutes</dd>
+<!-- Configuration Info -->
+<div class="card">
+    <div class="card-header">
+        <h3>Current Configuration</h3>
+        <p>Read-only system configuration values</p>
+    </div>
+    <div class="card-body">
+        <dl class="dl-grid">
+            <div class="dl-item">
+                <dt>Approval Timeout</dt>
+                <dd>{{.Config.Approval.TimeoutMinutes}} minutes</dd>
             </div>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <dt class="text-gray-500">Base URL</dt>
-                <dd class="text-gray-900 font-mono text-xs">{{.Config.Server.BaseURL}}</dd>
+            <div class="dl-item">
+                <dt>Base URL</dt>
+                <dd class="font-mono">{{.Config.Server.BaseURL}}</dd>
             </div>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <dt class="text-gray-500">Log Level</dt>
-                <dd class="text-gray-900">{{.Config.Logging.Level}}</dd>
+            <div class="dl-item">
+                <dt>Log Level</dt>
+                <dd>{{.Config.Logging.Level}}</dd>
             </div>
-            <div class="flex justify-between py-2">
-                <dt class="text-gray-500">Data Retention (Requests)</dt>
-                <dd class="text-gray-900">{{.Config.Retention.CompletedRequestsDays}} days</dd>
+            <div class="dl-item">
+                <dt>Data Retention</dt>
+                <dd>{{.Config.Retention.CompletedRequestsDays}} days</dd>
             </div>
         </dl>
     </div>
