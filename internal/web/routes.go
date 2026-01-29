@@ -8,9 +8,9 @@ import (
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no auth required)
 	mux.HandleFunc("GET /login", h.Login)
-	mux.HandleFunc("POST /login", h.LoginSubmit)
+	mux.Handle("POST /login", CSRFProtection(http.HandlerFunc(h.LoginSubmit)))
 	mux.HandleFunc("GET /logout", h.Logout)
-	mux.HandleFunc("POST /logout", h.Logout)
+	mux.Handle("POST /logout", CSRFProtection(http.HandlerFunc(h.Logout)))
 
 	// OAuth callback (special case - might need session or might be headless)
 	mux.HandleFunc("GET /oauth/callback", h.OAuthCallback)

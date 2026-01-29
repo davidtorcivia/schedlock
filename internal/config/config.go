@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -138,12 +139,13 @@ type CloudflareAccessConfig struct {
 
 // AuthConfig holds authentication settings.
 type AuthConfig struct {
-	AdminPassword    string
-	SecretKey        string
-	EncryptionKey    string
-	SessionDuration  time.Duration
-	SessionRefresh   bool
-	CloudflareAccess CloudflareAccessConfig
+	AdminPasswordHash string
+	AdminPassword     string // Optional fallback (dev only)
+	SecretKey         string
+	EncryptionKey     string
+	SessionDuration   time.Duration
+	SessionRefresh    bool
+	CloudflareAccess  CloudflareAccessConfig
 }
 
 // LoggingConfig holds logging settings.
@@ -176,39 +178,41 @@ func Load() (*Config, error) {
 
 	// Server configuration
 	cfg.Server = ServerConfig{
-		Host:         getEnv("HOST", DefaultHost),
-		Port:         getEnvInt("PORT", DefaultPort),
-		BaseURL:      getEnv("BASE_URL", DefaultBaseURL),
-		ReadTimeout:  getEnvDuration("READ_TIMEOUT", DefaultReadTimeout),
-		WriteTimeout: getEnvDuration("WRITE_TIMEOUT", DefaultWriteTimeout),
+		Host:         getEnvAnyDefault(DefaultHost, "SCHEDLOCK_SERVER_HOST", "HOST"),
+		Port:         getEnvIntAny(DefaultPort, "SCHEDLOCK_SERVER_PORT", "PORT"),
+		BaseURL:      getEnvAnyDefault(DefaultBaseURL, "SCHEDLOCK_BASE_URL", "BASE_URL"),
+		ReadTimeout:  getEnvDurationAny(DefaultReadTimeout, "SCHEDLOCK_READ_TIMEOUT", "READ_TIMEOUT"),
+		WriteTimeout: getEnvDurationAny(DefaultWriteTimeout, "SCHEDLOCK_WRITE_TIMEOUT", "WRITE_TIMEOUT"),
 	}
 
 	// Database configuration
+	dataDir := getEnvAnyDefault(DefaultDataDir, "SCHEDLOCK_DATA_DIR", "DATA_DIR")
+	dbName := getEnvAnyDefault("schedlock.db", "SCHEDLOCK_DB_NAME", "DB_NAME")
 	cfg.Database = DatabaseConfig{
-		Path:          getEnv("DATA_DIR", DefaultDataDir) + "/schedlock.db",
+		Path:          filepath.Join(dataDir, dbName),
 		WALMode:       true,
 		BusyTimeoutMs: DefaultBusyTimeoutMs,
 	}
 
 	// Google OAuth configuration
 	cfg.Google = GoogleConfig{
-		ClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
-		ClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+		ClientID:     getEnvAny("SCHEDLOCK_GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"),
+		ClientSecret: getEnvAny("SCHEDLOCK_GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"),
 		RedirectURI:  cfg.Server.BaseURL + "/oauth/callback",
 		Scopes:       []string{"https://www.googleapis.com/auth/calendar.events"},
 	}
 
 	// Approval configuration
 	cfg.Approval = ApprovalConfig{
-		TimeoutMinutes: getEnvInt("APPROVAL_TIMEOUT_MINUTES", DefaultApprovalTimeoutMinutes),
-		DefaultAction:  getEnv("APPROVAL_DEFAULT_ACTION", DefaultApprovalDefaultAction),
+		TimeoutMinutes: getEnvIntAny(DefaultApprovalTimeoutMinutes, "SCHEDLOCK_APPROVAL_TIMEOUT", "APPROVAL_TIMEOUT_MINUTES"),
+		DefaultAction:  getEnvAnyDefault(DefaultApprovalDefaultAction, "SCHEDLOCK_APPROVAL_DEFAULT_ACTION", "APPROVAL_DEFAULT_ACTION"),
 	}
 
 	// Rate limits configuration
 	cfg.RateLimits = RateLimitsConfig{
-		Read:  TierLimit{RequestsPerMinute: 60, Burst: 10},
-		Write: TierLimit{RequestsPerMinute: 30, Burst: 5},
-		Admin: TierLimit{RequestsPerMinute: 120, Burst: 20},
+		Read:  TierLimit{RequestsPerMinute: getEnvIntAny(60, "SCHEDLOCK_RATE_LIMIT_READ", "RATE_LIMIT_READ"), Burst: 10},
+		Write: TierLimit{RequestsPerMinute: getEnvIntAny(30, "SCHEDLOCK_RATE_LIMIT_WRITE", "RATE_LIMIT_WRITE"), Burst: 5},
+		Admin: TierLimit{RequestsPerMinute: getEnvIntAny(120, "SCHEDLOCK_RATE_LIMIT_ADMIN", "RATE_LIMIT_ADMIN"), Burst: 20},
 	}
 
 	// Retry configuration
@@ -222,39 +226,39 @@ func Load() (*Config, error) {
 	// Notification configuration
 	cfg.Notifications = NotificationsConfig{
 		Ntfy: NtfyConfig{
-			Enabled:        getEnvBool("NTFY_ENABLED", false),
-			Server:         getEnv("NTFY_SERVER", "https://ntfy.sh"),
-			Topic:          getEnv("NTFY_TOPIC", ""),
-			Token:          getEnv("NTFY_TOKEN", ""),
-			Priority:       getEnv("NTFY_PRIORITY", "high"),
-			MinimalContent: getEnvBool("NTFY_MINIMAL_CONTENT", false),
+			Enabled:        getEnvBoolAny(false, "SCHEDLOCK_NTFY_ENABLED", "NTFY_ENABLED"),
+			Server:         getEnvAnyDefault("https://ntfy.sh", "SCHEDLOCK_NTFY_SERVER_URL", "SCHEDLOCK_NTFY_SERVER", "NTFY_SERVER"),
+			Topic:          getEnvAny("SCHEDLOCK_NTFY_TOPIC", "NTFY_TOPIC"),
+			Token:          getEnvAny("SCHEDLOCK_NTFY_TOKEN", "NTFY_TOKEN"),
+			Priority:       getEnvAnyDefault("high", "SCHEDLOCK_NTFY_PRIORITY", "NTFY_PRIORITY"),
+			MinimalContent: getEnvBoolAny(false, "SCHEDLOCK_NTFY_MINIMAL_CONTENT", "NTFY_MINIMAL_CONTENT"),
 		},
 		Pushover: PushoverConfig{
-			Enabled:  getEnvBool("PUSHOVER_ENABLED", false),
-			AppToken: getEnv("PUSHOVER_APP_TOKEN", ""),
-			UserKey:  getEnv("PUSHOVER_USER_KEY", ""),
-			Priority: getEnvInt("PUSHOVER_PRIORITY", 1),
-			Sound:    getEnv("PUSHOVER_SOUND", "pushover"),
+			Enabled:  getEnvBoolAny(false, "SCHEDLOCK_PUSHOVER_ENABLED", "PUSHOVER_ENABLED"),
+			AppToken: getEnvAny("SCHEDLOCK_PUSHOVER_TOKEN", "SCHEDLOCK_PUSHOVER_APP_TOKEN", "PUSHOVER_APP_TOKEN"),
+			UserKey:  getEnvAny("SCHEDLOCK_PUSHOVER_USER_KEY", "PUSHOVER_USER_KEY"),
+			Priority: getEnvIntAny(1, "SCHEDLOCK_PUSHOVER_PRIORITY", "PUSHOVER_PRIORITY"),
+			Sound:    getEnvAnyDefault("pushover", "SCHEDLOCK_PUSHOVER_SOUND", "PUSHOVER_SOUND"),
 		},
 		Telegram: TelegramConfig{
-			Enabled:             getEnvBool("TELEGRAM_ENABLED", false),
-			BotToken:            getEnv("TELEGRAM_BOT_TOKEN", ""),
-			ChatID:              getEnv("TELEGRAM_CHAT_ID", ""),
-			WebhookSecret:       getEnv("TELEGRAM_WEBHOOK_SECRET", ""),
+			Enabled:             getEnvBoolAny(false, "SCHEDLOCK_TELEGRAM_ENABLED", "TELEGRAM_ENABLED"),
+			BotToken:            getEnvAny("SCHEDLOCK_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"),
+			ChatID:              getEnvAny("SCHEDLOCK_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID"),
+			WebhookSecret:       getEnvAny("SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_WEBHOOK_SECRET"),
 			WebhookPath:         "/webhooks/telegram",
-			AutoRegisterWebhook: getEnvBool("TELEGRAM_AUTO_REGISTER_WEBHOOK", true),
+			AutoRegisterWebhook: getEnvBoolAny(true, "SCHEDLOCK_TELEGRAM_AUTO_REGISTER_WEBHOOK", "TELEGRAM_AUTO_REGISTER_WEBHOOK"),
 		},
 	}
 
 	// Moltbot configuration
 	cfg.Moltbot = MoltbotConfig{
 		Webhook: WebhookConfig{
-			Enabled:          getEnvBool("MOLTBOT_WEBHOOK_ENABLED", false),
-			URL:              getEnv("MOLTBOT_WEBHOOK_URL", ""),
-			Token:            getEnv("MOLTBOT_WEBHOOK_TOKEN", ""),
+			Enabled:          getEnvBoolAny(false, "SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED", "MOLTBOT_WEBHOOK_ENABLED"),
+			URL:              getEnvAny("SCHEDLOCK_MOLTBOT_WEBHOOK_URL", "MOLTBOT_WEBHOOK_URL"),
+			Token:            getEnvAny("SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET", "SCHEDLOCK_MOLTBOT_WEBHOOK_TOKEN", "MOLTBOT_WEBHOOK_TOKEN"),
 			SessionKeyPrefix: "calendar-proxy",
-			TimeoutSeconds:   10,
-			MaxRetries:       3,
+			TimeoutSeconds:   getEnvIntAny(10, "SCHEDLOCK_MOLTBOT_WEBHOOK_TIMEOUT", "MOLTBOT_WEBHOOK_TIMEOUT"),
+			MaxRetries:       getEnvIntAny(3, "SCHEDLOCK_MOLTBOT_WEBHOOK_MAX_RETRIES", "MOLTBOT_WEBHOOK_MAX_RETRIES"),
 			RetryBackoff:     []int{1, 5, 15},
 			NotifyOn:         []string{"approved", "denied", "expired", "change_requested", "completed", "failed"},
 		},
@@ -262,28 +266,29 @@ func Load() (*Config, error) {
 
 	// Auth configuration
 	cfg.Auth = AuthConfig{
-		AdminPassword:   getEnv("ADMIN_PASSWORD", ""),
-		SecretKey:       getEnv("SECRET_KEY", ""),
-		EncryptionKey:   getEnv("ENCRYPTION_KEY", ""),
-		SessionDuration: getEnvDuration("SESSION_DURATION", DefaultSessionDuration),
-		SessionRefresh:  true,
+		AdminPasswordHash: getEnvAny("SCHEDLOCK_AUTH_PASSWORD_HASH", "ADMIN_PASSWORD_HASH"),
+		AdminPassword:     getEnvAny("SCHEDLOCK_ADMIN_PASSWORD", "ADMIN_PASSWORD"),
+		SecretKey:         getEnvAny("SCHEDLOCK_SERVER_SECRET", "SECRET_KEY", "SCHEDLOCK_SECRET_KEY"),
+		EncryptionKey:     getEnvAny("SCHEDLOCK_ENCRYPTION_KEY", "ENCRYPTION_KEY"),
+		SessionDuration:   getEnvDurationAny(DefaultSessionDuration, "SCHEDLOCK_SESSION_DURATION", "SESSION_DURATION"),
+		SessionRefresh:    getEnvBoolAny(true, "SCHEDLOCK_SESSION_REFRESH", "SESSION_REFRESH"),
 		CloudflareAccess: CloudflareAccessConfig{
-			Enabled: getEnvBool("CF_ACCESS_ENABLED", false),
-			Team:    getEnv("CF_ACCESS_TEAM", ""),
-			Aud:     getEnv("CF_ACCESS_AUD", ""),
+			Enabled: getEnvBoolAny(false, "SCHEDLOCK_CF_ACCESS_ENABLED", "CF_ACCESS_ENABLED"),
+			Team:    getEnvAny("SCHEDLOCK_CF_ACCESS_TEAM", "CF_ACCESS_TEAM"),
+			Aud:     getEnvAny("SCHEDLOCK_CF_ACCESS_AUD", "CF_ACCESS_AUD"),
 		},
 	}
 
 	// Logging configuration
 	cfg.Logging = LoggingConfig{
-		Level:         getEnv("LOG_LEVEL", DefaultLogLevel),
-		Format:        getEnv("LOG_FORMAT", "json"),
+		Level:         getEnvAnyDefault(DefaultLogLevel, "SCHEDLOCK_LOG_LEVEL", "LOG_LEVEL"),
+		Format:        getEnvAnyDefault("json", "SCHEDLOCK_LOG_FORMAT", "LOG_FORMAT"),
 		IncludeCaller: false,
 	}
 
 	// Display configuration
 	cfg.Display = DisplayConfig{
-		Timezone:       getEnv("DISPLAY_TIMEZONE", DefaultTimezone),
+		Timezone:       getEnvAnyDefault(DefaultTimezone, "SCHEDLOCK_DISPLAY_TIMEZONE", "DISPLAY_TIMEZONE"),
 		DateFormat:     "Jan 2, 2006",
 		TimeFormat:     "3:04 PM",
 		DatetimeFormat: "Jan 2, 2006 at 3:04 PM",
@@ -292,9 +297,9 @@ func Load() (*Config, error) {
 	// Retention configuration
 	cfg.Retention = RetentionConfig{
 		Enabled:               true,
-		CompletedRequestsDays: getEnvInt("RETENTION_COMPLETED_DAYS", DefaultCompletedRequestsDays),
-		AuditLogDays:          getEnvInt("RETENTION_AUDIT_DAYS", DefaultAuditLogDays),
-		WebhookFailuresDays:   getEnvInt("RETENTION_WEBHOOK_FAILURES_DAYS", DefaultWebhookFailuresDays),
+		CompletedRequestsDays: getEnvIntAny(DefaultCompletedRequestsDays, "SCHEDLOCK_RETENTION_REQUEST_DAYS", "RETENTION_COMPLETED_DAYS"),
+		AuditLogDays:          getEnvIntAny(DefaultAuditLogDays, "SCHEDLOCK_RETENTION_AUDIT_DAYS", "RETENTION_AUDIT_DAYS"),
+		WebhookFailuresDays:   getEnvIntAny(DefaultWebhookFailuresDays, "SCHEDLOCK_RETENTION_WEBHOOK_FAILURES_DAYS", "RETENTION_WEBHOOK_FAILURES_DAYS"),
 		VacuumSchedule:        "0 3 * * *",
 	}
 
@@ -309,19 +314,23 @@ func Load() (*Config, error) {
 // Validate checks that required configuration fields are set.
 func (c *Config) Validate() error {
 	if c.Auth.SecretKey == "" {
-		return fmt.Errorf("SECRET_KEY environment variable is required")
+		return fmt.Errorf("SCHEDLOCK_SERVER_SECRET (or SECRET_KEY) is required")
 	}
 	if c.Auth.EncryptionKey == "" {
-		return fmt.Errorf("ENCRYPTION_KEY environment variable is required")
+		return fmt.Errorf("SCHEDLOCK_ENCRYPTION_KEY (or ENCRYPTION_KEY) is required")
 	}
-	if c.Auth.AdminPassword == "" {
-		return fmt.Errorf("ADMIN_PASSWORD environment variable is required")
+	if c.Auth.AdminPasswordHash == "" && c.Auth.AdminPassword == "" {
+		return fmt.Errorf("SCHEDLOCK_AUTH_PASSWORD_HASH (or ADMIN_PASSWORD_HASH) is required")
 	}
 
 	// Validate at least one notification provider is enabled or warn
 	if !c.Notifications.Ntfy.Enabled && !c.Notifications.Pushover.Enabled && !c.Notifications.Telegram.Enabled {
 		// This is a warning, not an error - web UI still works
 		fmt.Println("Warning: No notification providers enabled. Approvals will only be available via Web UI.")
+	}
+
+	if c.Auth.AdminPasswordHash == "" && c.Auth.AdminPassword != "" {
+		fmt.Println("Warning: ADMIN_PASSWORD provided without hash. Use SCHEDLOCK_AUTH_PASSWORD_HASH for production.")
 	}
 
 	return nil
@@ -336,8 +345,33 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+func getEnvAny(keys ...string) string {
+	for _, key := range keys {
+		if value, exists := os.LookupEnv(key); exists {
+			return value
+		}
+	}
+	return ""
+}
+
+func getEnvAnyDefault(defaultValue string, keys ...string) string {
+	if value := getEnvAny(keys...); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
 func getEnvInt(key string, defaultValue int) int {
 	if value, exists := os.LookupEnv(key); exists {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvIntAny(defaultValue int, keys ...string) int {
+	if value := getEnvAny(keys...); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
 		}
@@ -353,8 +387,25 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
+func getEnvBoolAny(defaultValue bool, keys ...string) bool {
+	if value := getEnvAny(keys...); value != "" {
+		lower := strings.ToLower(value)
+		return lower == "true" || lower == "1" || lower == "yes"
+	}
+	return defaultValue
+}
+
 func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	if value, exists := os.LookupEnv(key); exists {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+	return defaultValue
+}
+
+func getEnvDurationAny(defaultValue time.Duration, keys ...string) time.Duration {
+	if value := getEnvAny(keys...); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
 		}

@@ -4,12 +4,14 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"net/http"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/config"
+	schedcrypto "github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
@@ -17,7 +19,6 @@ import (
 const (
 	sessionCookieName = "schedlock_session"
 	csrfCookieName    = "schedlock_csrf"
-	sessionDuration   = 24 * time.Hour
 )
 
 // SessionManager handles web UI sessions.
@@ -39,6 +40,7 @@ type Session struct {
 	UserAgent string
 	CreatedAt time.Time
 	ExpiresAt time.Time
+	CSRFToken string
 }
 
 // CreateSession creates a new session for a user.
@@ -48,12 +50,17 @@ func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, u
 		return nil, err
 	}
 
-	expiresAt := time.Now().Add(sessionDuration)
+	csrfToken, err := GenerateCSRFToken()
+	if err != nil {
+		return nil, err
+	}
+
+	expiresAt := time.Now().Add(m.sessionDuration())
 
 	_, err = m.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, user_id, ip_address, user_agent, expires_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, sessionID, userID, ipAddress, userAgent, expiresAt.Format(time.RFC3339))
+		INSERT INTO sessions (id, ip_address, user_agent, expires_at, csrf_token, last_activity)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))
+	`, sessionID, ipAddress, userAgent, util.SQLiteTimestamp(expiresAt), csrfToken)
 
 	if err != nil {
 		return nil, err
@@ -66,6 +73,7 @@ func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, u
 		UserAgent: userAgent,
 		CreatedAt: time.Now(),
 		ExpiresAt: expiresAt,
+		CSRFToken: csrfToken,
 	}, nil
 }
 
@@ -73,12 +81,13 @@ func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, u
 func (m *SessionManager) ValidateSession(ctx context.Context, sessionID string) (*Session, error) {
 	var session Session
 	var createdAt, expiresAt string
+	var csrfToken string
 
 	err := m.db.QueryRowContext(ctx, `
-		SELECT id, user_id, ip_address, user_agent, created_at, expires_at
+		SELECT id, ip_address, user_agent, created_at, expires_at, csrf_token
 		FROM sessions
 		WHERE id = ? AND expires_at > datetime('now')
-	`, sessionID).Scan(&session.ID, &session.UserID, &session.IPAddress, &session.UserAgent, &createdAt, &expiresAt)
+	`, sessionID).Scan(&session.ID, &session.IPAddress, &session.UserAgent, &createdAt, &expiresAt, &csrfToken)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -89,6 +98,8 @@ func (m *SessionManager) ValidateSession(ctx context.Context, sessionID string) 
 
 	session.CreatedAt, _ = util.ParseSQLiteTimestamp(createdAt)
 	session.ExpiresAt, _ = util.ParseSQLiteTimestamp(expiresAt)
+	session.UserID = "admin"
+	session.CSRFToken = csrfToken
 
 	return &session, nil
 }
@@ -101,24 +112,27 @@ func (m *SessionManager) DeleteSession(ctx context.Context, sessionID string) er
 
 // RefreshSession extends a session's expiration.
 func (m *SessionManager) RefreshSession(ctx context.Context, sessionID string) error {
-	expiresAt := time.Now().Add(sessionDuration)
+	expiresAt := time.Now().Add(m.sessionDuration())
 	_, err := m.db.ExecContext(ctx, `
-		UPDATE sessions SET expires_at = ? WHERE id = ?
-	`, expiresAt.Format(time.RFC3339), sessionID)
+		UPDATE sessions SET expires_at = ?, last_activity = datetime('now') WHERE id = ?
+	`, util.SQLiteTimestamp(expiresAt), sessionID)
 	return err
 }
 
 // VerifyPassword checks if a password matches the admin password.
 func (m *SessionManager) VerifyPassword(password string) bool {
+	if m.config.AdminPasswordHash != "" {
+		ok, err := schedcrypto.VerifyPassword(password, m.config.AdminPasswordHash)
+		return err == nil && ok
+	}
 	if m.config.AdminPassword == "" {
 		return false
 	}
-	// For simplicity, do direct comparison. In production, store a hashed version.
-	return password == m.config.AdminPassword
+	return subtle.ConstantTimeCompare([]byte(password), []byte(m.config.AdminPassword)) == 1
 }
 
 // SetSessionCookie sets the session cookie on the response.
-func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool) {
+func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool, duration time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    sessionID,
@@ -126,7 +140,7 @@ func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool) {
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(sessionDuration.Seconds()),
+		MaxAge:   int(duration.Seconds()),
 	})
 }
 
@@ -162,7 +176,7 @@ func GenerateCSRFToken() (string, error) {
 }
 
 // SetCSRFCookie sets the CSRF cookie on the response.
-func SetCSRFCookie(w http.ResponseWriter, token string, secure bool) {
+func SetCSRFCookie(w http.ResponseWriter, token string, secure bool, duration time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    token,
@@ -170,7 +184,7 @@ func SetCSRFCookie(w http.ResponseWriter, token string, secure bool) {
 		HttpOnly: false, // JS needs to read this
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(sessionDuration.Seconds()),
+		MaxAge:   int(duration.Seconds()),
 	})
 }
 
@@ -248,12 +262,21 @@ func (m *SessionManager) RequireSession(next http.Handler) http.Handler {
 		}
 
 		// Refresh session
-		m.RefreshSession(r.Context(), sessionID)
+		if m.config.SessionRefresh {
+			m.RefreshSession(r.Context(), sessionID)
+		}
 
 		// Add session to context
 		ctx := WithSession(r.Context(), session)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (m *SessionManager) sessionDuration() time.Duration {
+	if m.config.SessionDuration <= 0 {
+		return 24 * time.Hour
+	}
+	return m.config.SessionDuration
 }
 
 // CSRFProtection middleware ensures CSRF token is valid for POST requests.

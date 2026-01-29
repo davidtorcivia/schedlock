@@ -4,8 +4,12 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"time"
+
+	"google.golang.org/api/googleapi"
 
 	"github.com/dtorcivia/schedlock/internal/apikeys"
 	"github.com/dtorcivia/schedlock/internal/config"
@@ -13,6 +17,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/google"
 	"github.com/dtorcivia/schedlock/internal/notifications"
 	"github.com/dtorcivia/schedlock/internal/requests"
+	"github.com/dtorcivia/schedlock/internal/tokens"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
@@ -25,6 +30,7 @@ type Engine struct {
 	webhookClient  WebhookClient
 	executionQueue *ExecutionQueue
 	auditLogger    *AuditLogger
+	tokenRepo      *tokens.Repository
 }
 
 // NotificationManager interface for sending approval notifications.
@@ -52,12 +58,14 @@ func NewEngine(
 	requestRepo *requests.Repository,
 	calendarClient *google.CalendarClient,
 	auditLogger *AuditLogger,
+	tokenRepo *tokens.Repository,
 ) *Engine {
 	e := &Engine{
 		config:         cfg,
 		requestRepo:    requestRepo,
 		calendarClient: calendarClient,
 		auditLogger:    auditLogger,
+		tokenRepo:      tokenRepo,
 	}
 
 	// Create execution queue with single worker
@@ -86,6 +94,16 @@ func (e *Engine) Stop() {
 	e.executionQueue.Stop()
 }
 
+// QueueExecution enqueues a request for execution.
+func (e *Engine) QueueExecution(requestID string) {
+	e.executionQueue.Enqueue(requestID)
+}
+
+// NotifyWebhookStatus sends a webhook status update.
+func (e *Engine) NotifyWebhookStatus(ctx context.Context, requestID, status string) {
+	e.notifyWebhook(ctx, requestID, status)
+}
+
 // SubmitRequest creates a new request and sends notifications.
 func (e *Engine) SubmitRequest(
 	ctx context.Context,
@@ -93,6 +111,8 @@ func (e *Engine) SubmitRequest(
 	operation string,
 	payload json.RawMessage,
 	idempotencyKey string,
+	approvalRequired bool,
+	decidedBy string,
 ) (*database.Request, error) {
 	// Check idempotency key first
 	if idempotencyKey != "" {
@@ -136,8 +156,20 @@ func (e *Engine) SubmitRequest(
 		"operation": operation,
 	})
 
-	// Send approval notifications (async)
-	go e.sendApprovalNotifications(context.Background(), req)
+	if approvalRequired {
+		// Send approval notifications (async)
+		go e.sendApprovalNotifications(context.Background(), req)
+	} else {
+		if decidedBy == "" {
+			decidedBy = "auto"
+		}
+		// Auto-approve
+		if err := e.ProcessApproval(ctx, req.ID, "approve", decidedBy); err != nil {
+			return nil, err
+		}
+		// Reload request to reflect updated status
+		req, _ = e.requestRepo.GetByID(ctx, req.ID)
+	}
 
 	util.Info("Request submitted",
 		"request_id", req.ID,
@@ -344,7 +376,28 @@ func (e *Engine) executeDeleteEvent(ctx context.Context, req *database.Request) 
 }
 
 func (e *Engine) isRetryable(err error) bool {
-	// TODO: Check for specific Google API error codes (429, 500, 502, 503)
+	if !e.config.Retry.Enabled {
+		return false
+	}
+
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) {
+		for _, code := range e.config.Retry.RetryableStatusCodes {
+			if apiErr.Code == code {
+				return true
+			}
+		}
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
 	return false
 }
 
@@ -358,6 +411,17 @@ func (e *Engine) getBackoffDuration(retryCount int) time.Duration {
 func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Request) {
 	if e.notifier == nil {
 		return
+	}
+
+	// Create decision token for callbacks if possible
+	var decisionToken string
+	if e.tokenRepo != nil {
+		token, err := e.tokenRepo.Create(ctx, req.ID, req.ExpiresAt)
+		if err != nil {
+			util.Error("Failed to create decision token", "error", err, "request_id", req.ID)
+		} else {
+			decisionToken = token
+		}
 	}
 
 	// Parse payload to get event details
@@ -383,6 +447,7 @@ func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Re
 		Details:   details,
 		ExpiresAt: req.ExpiresAt,
 		ExpiresIn: util.GetDefaultFormatter().FormatExpiresIn(req.ExpiresAt),
+		DecisionToken: decisionToken,
 		// URLs will be set by the notification manager based on config
 	}
 
@@ -393,6 +458,9 @@ func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Re
 
 func (e *Engine) notifyWebhook(ctx context.Context, requestID, status string) {
 	if e.webhookClient == nil {
+		return
+	}
+	if !e.shouldNotify(status) {
 		return
 	}
 
@@ -410,6 +478,7 @@ func (e *Engine) notifyWebhook(ctx context.Context, requestID, status string) {
 
 	if err := e.webhookClient.Deliver(ctx, event); err != nil {
 		util.Error("Failed to deliver webhook", "error", err, "request_id", requestID)
+		return
 	}
 
 	e.requestRepo.SetWebhookNotified(ctx, requestID)
@@ -417,6 +486,9 @@ func (e *Engine) notifyWebhook(ctx context.Context, requestID, status string) {
 
 func (e *Engine) notifyWebhookWithSuggestion(ctx context.Context, requestID, suggestion string) {
 	if e.webhookClient == nil {
+		return
+	}
+	if !e.shouldNotify(database.StatusChangeRequested) {
 		return
 	}
 
@@ -434,9 +506,25 @@ func (e *Engine) notifyWebhookWithSuggestion(ctx context.Context, requestID, sug
 
 	if err := e.webhookClient.Deliver(ctx, event); err != nil {
 		util.Error("Failed to deliver webhook", "error", err, "request_id", requestID)
+		return
 	}
 
 	e.requestRepo.SetWebhookNotified(ctx, requestID)
+}
+
+func (e *Engine) shouldNotify(status string) bool {
+	if e.webhookClient == nil {
+		return false
+	}
+	if len(e.config.Moltbot.Webhook.NotifyOn) == 0 {
+		return true
+	}
+	for _, allowed := range e.config.Moltbot.Webhook.NotifyOn {
+		if allowed == status {
+			return true
+		}
+	}
+	return false
 }
 
 func getOperationSummary(operation string, details *notifications.EventDetails) string {

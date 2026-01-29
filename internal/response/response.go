@@ -4,6 +4,7 @@ package response
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 )
 
 // JSON writes a JSON response.
@@ -149,7 +150,7 @@ func WriteInsufficientPermissions(w http.ResponseWriter, tier, operation string)
 
 // WriteRateLimited writes a 429 rate limited error.
 func WriteRateLimited(w http.ResponseWriter, retryAfter int) {
-	w.Header().Set("Retry-After", string(rune(retryAfter)))
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	WriteErrorWithDetails(w, http.StatusTooManyRequests, ErrCodeRateLimited,
 		"Too many requests, please slow down",
 		"", map[string]interface{}{

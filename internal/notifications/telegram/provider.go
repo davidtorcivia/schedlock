@@ -86,7 +86,7 @@ type messageResult struct {
 // SendApproval sends an approval request notification with inline keyboard.
 func (p *Provider) SendApproval(ctx context.Context, notification *notifications.ApprovalNotification) (string, error) {
 	var text strings.Builder
-	text.WriteString(fmt.Sprintf("📅 *%s*\n\n", escapeMarkdown(notification.Summary)))
+	text.WriteString(fmt.Sprintf("*%s*\n\n", escapeMarkdown(notification.Summary)))
 	text.WriteString(fmt.Sprintf("*Operation:* %s\n", escapeMarkdown(notification.Operation)))
 
 	if notification.Details != nil {
@@ -111,21 +111,23 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 		}
 	}
 
-	text.WriteString(fmt.Sprintf("\n⏰ *Expires:* %s\n", notification.ExpiresIn))
+	text.WriteString(fmt.Sprintf("\n*Expires:* %s\n", notification.ExpiresIn))
 	text.WriteString(fmt.Sprintf("\n_Request ID: %s_", notification.RequestID))
-	text.WriteString("\n\n💡 Reply to this message to suggest changes")
+	text.WriteString("\n\nReply to this message to suggest changes")
 
 	// Create inline keyboard with approve/deny buttons
 	keyboard := &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "✅ Approve", CallbackData: fmt.Sprintf("approve:%s", notification.RequestID)},
-				{Text: "❌ Deny", CallbackData: fmt.Sprintf("deny:%s", notification.RequestID)},
-			},
-			{
-				{Text: "📝 View Details", URL: notification.WebURL},
+				{Text: "Approve", CallbackData: fmt.Sprintf("approve:%s", notification.RequestID)},
+				{Text: "Deny", CallbackData: fmt.Sprintf("deny:%s", notification.RequestID)},
 			},
 		},
+	}
+	if notification.WebURL != "" {
+		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, []InlineKeyboardButton{
+			{Text: "View Details", URL: notification.WebURL},
+		})
 	}
 
 	req := sendMessageRequest{
@@ -143,15 +145,15 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 	var emoji string
 	switch notification.Status {
 	case "completed":
-		emoji = "✅"
+		emoji = "OK"
 	case "failed":
-		emoji = "❌"
+		emoji = "FAILED"
 	case "denied":
-		emoji = "🚫"
+		emoji = "DENIED"
 	case "expired":
-		emoji = "⏰"
+		emoji = "EXPIRED"
 	default:
-		emoji = "📅"
+		emoji = "STATUS"
 	}
 
 	text := fmt.Sprintf("%s *%s: %s*\n\n%s",
@@ -180,14 +182,14 @@ func (p *Provider) SendTest(ctx context.Context) error {
 	keyboard := &InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
-				{Text: "✅ Test Button", CallbackData: "test:button"},
+				{Text: "Test Button", CallbackData: "test:button"},
 			},
 		},
 	}
 
 	req := sendMessageRequest{
 		ChatID:      p.config.ChatID,
-		Text:        "🧪 *SchedLock Test*\n\nThis is a test notification from SchedLock\\. If you can see this, Telegram is configured correctly\\!\n\nClick the button below to test inline keyboard functionality\\.",
+		Text:        "*SchedLock Test*\n\nThis is a test notification from SchedLock\\. If you can see this, Telegram is configured correctly\\.\n\nClick the button below to test inline keyboard functionality\\.",
 		ParseMode:   "MarkdownV2",
 		ReplyMarkup: keyboard,
 	}
@@ -198,11 +200,11 @@ func (p *Provider) SendTest(ctx context.Context) error {
 
 // RemoveKeyboard removes the inline keyboard from a message.
 func (p *Provider) RemoveKeyboard(ctx context.Context, messageID int64, status string) error {
-	emoji := "✅"
+	emoji := "OK"
 	if status == "denied" {
-		emoji = "❌"
+		emoji = "DENIED"
 	} else if status == "change_requested" {
-		emoji = "📝"
+		emoji = "UPDATED"
 	}
 
 	req := editMessageRequest{

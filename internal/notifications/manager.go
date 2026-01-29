@@ -2,7 +2,9 @@ package notifications
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/dtorcivia/schedlock/internal/config"
@@ -64,6 +66,8 @@ func (m *Manager) SendApprovalRequest(ctx context.Context, notification *Approva
 		return nil
 	}
 
+	m.populateApprovalURLs(notification)
+
 	var lastErr error
 	successCount := 0
 
@@ -76,11 +80,11 @@ func (m *Manager) SendApprovalRequest(ctx context.Context, notification *Approva
 				"error", err,
 			)
 			lastErr = err
-			m.logNotification(ctx, notification.RequestID, provider.Name(), "", err.Error())
+			m.logNotification(ctx, notification.RequestID, provider.Name(), "", database.NotificationFailed, err.Error())
 			continue
 		}
 
-		m.logNotification(ctx, notification.RequestID, provider.Name(), messageID, "")
+		m.logNotification(ctx, notification.RequestID, provider.Name(), messageID, database.NotificationSent, "")
 		successCount++
 
 		util.Info("Sent approval notification",
@@ -144,17 +148,42 @@ func (m *Manager) GetProviderByName(name string) Provider {
 	return nil
 }
 
-// logNotification logs a notification to the database.
-func (m *Manager) logNotification(ctx context.Context, requestID, provider, messageID, errorMsg string) {
-	var errPtr *string
-	if errorMsg != "" {
-		errPtr = &errorMsg
+// populateApprovalURLs fills in callback and review URLs if missing.
+func (m *Manager) populateApprovalURLs(notification *ApprovalNotification) {
+	if notification == nil {
+		return
 	}
 
+	baseURL := strings.TrimRight(m.config.Server.BaseURL, "/")
+	if baseURL == "" {
+		return
+	}
+
+	if notification.WebURL == "" {
+		notification.WebURL = fmt.Sprintf("%s/requests/%s", baseURL, notification.RequestID)
+	}
+
+	if notification.DecisionToken == "" {
+		return
+	}
+
+	if notification.ApproveURL == "" {
+		notification.ApproveURL = fmt.Sprintf("%s/api/callback/approve/%s", baseURL, notification.DecisionToken)
+	}
+	if notification.DenyURL == "" {
+		notification.DenyURL = fmt.Sprintf("%s/api/callback/deny/%s", baseURL, notification.DecisionToken)
+	}
+	if notification.SuggestURL == "" {
+		notification.SuggestURL = fmt.Sprintf("%s/api/callback/suggest/%s", baseURL, notification.DecisionToken)
+	}
+}
+
+// logNotification logs a notification to the database.
+func (m *Manager) logNotification(ctx context.Context, requestID, provider, messageID, status, errorMsg string) {
 	_, err := m.db.ExecContext(ctx, `
-		INSERT INTO notification_log (request_id, provider, message_id, error_message)
-		VALUES (?, ?, NULLIF(?, ''), ?)
-	`, requestID, provider, messageID, errPtr)
+		INSERT INTO notification_log (request_id, provider, status, message_id, error)
+		VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
+	`, requestID, provider, status, messageID, errorMsg)
 
 	if err != nil {
 		util.Error("Failed to log notification", "error", err)
@@ -164,7 +193,7 @@ func (m *Manager) logNotification(ctx context.Context, requestID, provider, mess
 // GetNotificationLog retrieves notification logs for a request.
 func (m *Manager) GetNotificationLog(ctx context.Context, requestID string) ([]NotificationLog, error) {
 	rows, err := m.db.QueryContext(ctx, `
-		SELECT id, request_id, provider, message_id, sent_at, delivered_at, error_message
+		SELECT id, request_id, provider, status, message_id, sent_at, callback_at, error, response
 		FROM notification_log
 		WHERE request_id = ?
 		ORDER BY sent_at DESC
@@ -178,25 +207,32 @@ func (m *Manager) GetNotificationLog(ctx context.Context, requestID string) ([]N
 	var logs []NotificationLog
 	for rows.Next() {
 		var log NotificationLog
-		var messageID, errorMsg *string
-		var sentAt, deliveredAt *string
+		var messageID, errorMsg sql.NullString
+		var sentAt, callbackAt sql.NullString
+		var response sql.NullString
 
-		if err := rows.Scan(&log.ID, &log.RequestID, &log.Provider, &messageID, &sentAt, &deliveredAt, &errorMsg); err != nil {
+		if err := rows.Scan(
+			&log.ID, &log.RequestID, &log.Provider, &log.Status,
+			&messageID, &sentAt, &callbackAt, &errorMsg, &response,
+		); err != nil {
 			return nil, err
 		}
 
-		if messageID != nil {
-			log.MessageID = *messageID
+		if messageID.Valid {
+			log.MessageID = messageID.String
 		}
-		if errorMsg != nil {
-			log.ErrorMessage = *errorMsg
+		if errorMsg.Valid {
+			log.ErrorMessage = errorMsg.String
 		}
-		if sentAt != nil {
-			log.SentAt, _ = util.ParseSQLiteTimestamp(*sentAt)
+		if sentAt.Valid {
+			log.SentAt, _ = util.ParseSQLiteTimestamp(sentAt.String)
 		}
-		if deliveredAt != nil {
-			t, _ := util.ParseSQLiteTimestamp(*deliveredAt)
-			log.DeliveredAt = &t
+		if callbackAt.Valid {
+			t, _ := util.ParseSQLiteTimestamp(callbackAt.String)
+			log.CallbackAt = &t
+		}
+		if response.Valid {
+			log.Response = []byte(response.String)
 		}
 
 		logs = append(logs, log)
@@ -208,32 +244,65 @@ func (m *Manager) GetNotificationLog(ctx context.Context, requestID string) ([]N
 // FindByMessageID finds a notification log by provider and message ID.
 func (m *Manager) FindByMessageID(ctx context.Context, provider, messageID string) (*NotificationLog, error) {
 	var log NotificationLog
-	var msgID, errorMsg *string
-	var sentAt, deliveredAt *string
+	var msgID, errorMsg sql.NullString
+	var sentAt, callbackAt sql.NullString
+	var response sql.NullString
 
 	err := m.db.QueryRowContext(ctx, `
-		SELECT id, request_id, provider, message_id, sent_at, delivered_at, error_message
+		SELECT id, request_id, provider, status, message_id, sent_at, callback_at, error, response
 		FROM notification_log
 		WHERE provider = ? AND message_id = ?
-	`, provider, messageID).Scan(&log.ID, &log.RequestID, &log.Provider, &msgID, &sentAt, &deliveredAt, &errorMsg)
+	`, provider, messageID).Scan(
+		&log.ID, &log.RequestID, &log.Provider, &log.Status,
+		&msgID, &sentAt, &callbackAt, &errorMsg, &response,
+	)
 
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	if msgID != nil {
-		log.MessageID = *msgID
+	if msgID.Valid {
+		log.MessageID = msgID.String
 	}
-	if errorMsg != nil {
-		log.ErrorMessage = *errorMsg
+	if errorMsg.Valid {
+		log.ErrorMessage = errorMsg.String
 	}
-	if sentAt != nil {
-		log.SentAt, _ = util.ParseSQLiteTimestamp(*sentAt)
+	if sentAt.Valid {
+		log.SentAt, _ = util.ParseSQLiteTimestamp(sentAt.String)
 	}
-	if deliveredAt != nil {
-		t, _ := util.ParseSQLiteTimestamp(*deliveredAt)
-		log.DeliveredAt = &t
+	if callbackAt.Valid {
+		t, _ := util.ParseSQLiteTimestamp(callbackAt.String)
+		log.CallbackAt = &t
+	}
+	if response.Valid {
+		log.Response = []byte(response.String)
 	}
 
 	return &log, nil
+}
+
+// MarkCallback marks a notification as having received a callback.
+func (m *Manager) MarkCallback(ctx context.Context, provider, requestID, messageID string) {
+	if provider == "" {
+		return
+	}
+
+	query := `
+		UPDATE notification_log
+		SET status = ?, callback_at = datetime('now')
+		WHERE id = (
+			SELECT id FROM notification_log
+			WHERE provider = ? AND request_id = ?
+			AND (message_id = ? OR ? = '')
+			ORDER BY sent_at DESC
+			LIMIT 1
+		)
+	`
+	_, err := m.db.ExecContext(ctx, query, database.NotificationCallbackReceived, provider, requestID, messageID, messageID)
+	if err != nil {
+		util.Error("Failed to mark notification callback", "error", err)
+	}
 }

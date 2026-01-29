@@ -8,7 +8,7 @@
             <div class="p-5">
                 <div class="flex items-center">
                     <div class="flex-shrink-0">
-                        <span class="text-3xl">⏳</span>
+                        <span class="text-sm font-semibold text-gray-500">PENDING</span>
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
@@ -27,7 +27,7 @@
             <div class="p-5">
                 <div class="flex items-center">
                     <div class="flex-shrink-0">
-                        <span class="text-3xl">📊</span>
+                        <span class="text-sm font-semibold text-gray-500">TODAY</span>
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
@@ -46,16 +46,12 @@
             <div class="p-5">
                 <div class="flex items-center">
                     <div class="flex-shrink-0">
-                        <span class="text-3xl">🔑</span>
+                        <span class="text-sm font-semibold text-gray-500">KEYS</span>
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
                             <dt class="text-sm font-medium text-gray-500 truncate">Active API Keys</dt>
-                            <dd class="text-lg font-semibold text-gray-900">
-                                {{if .APIKeyStats}}
-                                    {{range $tier, $count := .APIKeyStats}}{{$count}}{{end}}
-                                {{else}}0{{end}}
-                            </dd>
+                        <dd class="text-lg font-semibold text-gray-900">{{.APIKeyTotal}}</dd>
                         </dl>
                     </div>
                 </div>
@@ -69,7 +65,7 @@
             <div class="p-5">
                 <div class="flex items-center">
                     <div class="flex-shrink-0">
-                        <span class="text-3xl">⚙️</span>
+                        <span class="text-sm font-semibold text-gray-500">SETTINGS</span>
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
@@ -97,7 +93,7 @@
                 <div class="flex items-center justify-between">
                     <div class="flex-1">
                         <div class="flex items-center">
-                            <span class="text-xl mr-2">{{statusIcon .Status}}</span>
+                            <span class="text-xs font-semibold text-gray-500 mr-2">{{statusIcon .Status}}</span>
                             <p class="text-sm font-medium text-indigo-600 truncate">{{.Operation}}</p>
                             <span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full {{statusClass .Status}}">
                                 {{.Status}}
@@ -131,7 +127,7 @@
     </div>
     {{else}}
     <div class="bg-white shadow rounded-lg p-8 text-center">
-        <span class="text-6xl">✨</span>
+        <span class="text-2xl font-semibold text-gray-500">No pending requests</span>
         <h3 class="mt-4 text-lg font-medium text-gray-900">All caught up!</h3>
         <p class="mt-2 text-sm text-gray-500">No pending approval requests.</p>
     </div>

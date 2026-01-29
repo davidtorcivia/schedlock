@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -24,9 +25,20 @@ type Handler struct {
 	requestRepo     *requests.Repository
 	apiKeyRepo      *apikeys.Repository
 	tokenRepo       *tokens.Repository
-	calendarClient  *google.CalendarClient
+	calendarClient  CalendarClient
 	notificationMgr *notifications.Manager
 	auditLogger     *engine.AuditLogger
+}
+
+// CalendarClient defines the subset of Google Calendar client behavior used by the API handler.
+type CalendarClient interface {
+	ListCalendars(ctx context.Context) ([]google.Calendar, error)
+	ListEvents(ctx context.Context, opts google.EventListOptions) (*google.EventListResponse, error)
+	GetEvent(ctx context.Context, calendarID, eventID string) (*google.Event, error)
+	FreeBusy(ctx context.Context, req *google.FreeBusyRequest) (*google.FreeBusyResponse, error)
+	CreateEvent(ctx context.Context, intent *google.EventIntent) (*google.Event, error)
+	UpdateEvent(ctx context.Context, intent *google.EventUpdateIntent) (*google.Event, error)
+	DeleteEvent(ctx context.Context, intent *google.EventDeleteIntent) error
 }
 
 // NewHandler creates a new API handler.
@@ -36,7 +48,7 @@ func NewHandler(
 	requestRepo *requests.Repository,
 	apiKeyRepo *apikeys.Repository,
 	tokenRepo *tokens.Repository,
-	calendarClient *google.CalendarClient,
+	calendarClient CalendarClient,
 	notificationMgr *notifications.Manager,
 	auditLogger *engine.AuditLogger,
 ) *Handler {
@@ -62,6 +74,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/calendar/{calendarId}/events", h.ListEvents)
 	mux.HandleFunc("GET /api/calendar/{calendarId}/events/{eventId}", h.GetEvent)
 	mux.HandleFunc("GET /api/calendar/freebusy", h.FreeBusy)
+	mux.HandleFunc("POST /api/calendar/freebusy", h.FreeBusy)
 
 	// Calendar write operations (write tier)
 	mux.HandleFunc("POST /api/calendar/events/create", h.CreateEvent)
@@ -123,8 +136,8 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"requests": stats,
-		"api_keys": apiKeyStats,
+		"requests":      stats,
+		"api_keys":      apiKeyStats,
 		"audit_entries": auditCount,
 	})
 }

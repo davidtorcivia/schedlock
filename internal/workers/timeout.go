@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/database"
+	"github.com/dtorcivia/schedlock/internal/engine"
 	"github.com/dtorcivia/schedlock/internal/requests"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
@@ -14,16 +15,20 @@ import (
 type TimeoutWorker struct {
 	requestRepo *requests.Repository
 	db          *database.DB
+	engine      *engine.Engine
 	interval    time.Duration
+	defaultAction string
 	webhookChan chan<- string // Channel to notify webhook client of expirations
 }
 
 // NewTimeoutWorker creates a new timeout worker.
-func NewTimeoutWorker(requestRepo *requests.Repository, db *database.DB, interval time.Duration) *TimeoutWorker {
+func NewTimeoutWorker(requestRepo *requests.Repository, db *database.DB, engine *engine.Engine, interval time.Duration, defaultAction string) *TimeoutWorker {
 	return &TimeoutWorker{
 		requestRepo: requestRepo,
 		db:          db,
+		engine:      engine,
 		interval:    interval,
+		defaultAction: defaultAction,
 	}
 }
 
@@ -69,28 +74,30 @@ func (w *TimeoutWorker) processExpired(ctx context.Context) {
 	util.Info("Processing expired requests", "count", len(expired))
 
 	for _, req := range expired {
-		// Atomically update status to expired
-		updated, err := w.requestRepo.UpdateStatusFrom(ctx, req.ID, database.StatusPendingApproval, database.StatusExpired)
+		if w.defaultAction == "approve" && w.engine != nil {
+			if err := w.engine.ProcessApproval(ctx, req.ID, "approve", "timeout"); err != nil {
+				util.Error("Failed to auto-approve expired request", "error", err, "request_id", req.ID)
+				continue
+			}
+			util.Info("Request auto-approved on timeout", "request_id", req.ID)
+			continue
+		}
+
+		updated, err := w.requestRepo.UpdateStatus(ctx, req.ID, database.StatusExpired, "timeout")
 		if err != nil {
 			util.Error("Failed to expire request", "error", err, "request_id", req.ID)
 			continue
 		}
 
 		if !updated {
-			// Request was already decided by another process
 			continue
 		}
 
 		// Log to audit
-		w.logAudit(ctx, req.ID, req.APIKeyID)
+		w.logAudit(ctx, req.ID, req.APIKeyID, database.AuditRequestExpired)
 
-		// Notify webhook client
-		if w.webhookChan != nil {
-			select {
-			case w.webhookChan <- req.ID:
-			default:
-				util.Warn("Webhook channel full, dropping notification", "request_id", req.ID)
-			}
+		if w.engine != nil {
+			w.engine.NotifyWebhookStatus(ctx, req.ID, database.StatusExpired)
 		}
 
 		util.Info("Request expired", "request_id", req.ID)
@@ -98,11 +105,11 @@ func (w *TimeoutWorker) processExpired(ctx context.Context) {
 }
 
 // logAudit logs an expiration event to the audit log.
-func (w *TimeoutWorker) logAudit(ctx context.Context, requestID, apiKeyID string) {
+func (w *TimeoutWorker) logAudit(ctx context.Context, requestID, apiKeyID, eventType string) {
 	_, err := w.db.ExecContext(ctx, `
 		INSERT INTO audit_log (event_type, request_id, api_key_id, actor, details)
 		VALUES (?, ?, ?, ?, NULL)
-	`, database.AuditRequestExpired, requestID, apiKeyID, "timeout_worker")
+	`, eventType, requestID, apiKeyID, "timeout_worker")
 
 	if err != nil {
 		util.Error("Failed to log expiration audit", "error", err)

@@ -4,7 +4,7 @@
 
     <!-- Google Calendar Connection -->
     <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">📅 Google Calendar</h2>
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Google Calendar</h2>
         {{if .OAuthConnected}}
         <div class="flex items-center justify-between">
             <div class="flex items-center">
@@ -19,7 +19,7 @@
         {{else}}
         <div class="flex items-center justify-between">
             <div class="flex items-center">
-                <span class="text-yellow-500 text-2xl mr-3">⚠</span>
+                <span class="text-yellow-500 text-2xl mr-3">!</span>
                 <div>
                     <p class="text-sm font-medium text-gray-900">Not Connected</p>
                     <p class="text-sm text-gray-500">Connect to Google Calendar to enable calendar operations.</p>
@@ -34,7 +34,7 @@
 
     <!-- Notification Providers -->
     <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">🔔 Notification Providers</h2>
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Notification Providers</h2>
 
         <div class="space-y-4">
             {{range .Providers}}
@@ -74,7 +74,7 @@
 
     <!-- Configuration Info -->
     <div class="bg-white shadow rounded-lg p-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">⚙️ Configuration</h2>
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Configuration</h2>
 
         <dl class="space-y-3 text-sm">
             <div class="flex justify-between py-2 border-b border-gray-100">
@@ -87,11 +87,11 @@
             </div>
             <div class="flex justify-between py-2 border-b border-gray-100">
                 <dt class="text-gray-500">Log Level</dt>
-                <dd class="text-gray-900">{{.Config.Log.Level}}</dd>
+                <dd class="text-gray-900">{{.Config.Logging.Level}}</dd>
             </div>
             <div class="flex justify-between py-2">
                 <dt class="text-gray-500">Data Retention (Requests)</dt>
-                <dd class="text-gray-900">{{.Config.Retention.RequestDays}} days</dd>
+                <dd class="text-gray-900">{{.Config.Retention.CompletedRequestsDays}} days</dd>
             </div>
         </dl>
     </div>

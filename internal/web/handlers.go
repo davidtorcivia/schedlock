@@ -24,6 +24,7 @@ type Handler struct {
 	config          *config.Config
 	templates       *template.Template
 	sessionMgr      *SessionManager
+	loginLimiter    *LoginLimiter
 	requestRepo     *requests.Repository
 	apiKeyRepo      *apikeys.Repository
 	tokenRepo       *tokens.Repository
@@ -55,6 +56,7 @@ func NewHandler(
 		config:          cfg,
 		templates:       tmpl,
 		sessionMgr:      sessionMgr,
+		loginLimiter:    NewLoginLimiter(10, 10*time.Minute),
 		requestRepo:     requestRepo,
 		apiKeyRepo:      apiKeyRepo,
 		tokenRepo:       tokenRepo,
@@ -67,11 +69,18 @@ func NewHandler(
 
 // loadTemplates loads all HTML templates.
 func loadTemplates(dir string) (*template.Template, error) {
+	formatter := util.GetDefaultFormatter()
 	funcMap := template.FuncMap{
 		"formatTime": func(t time.Time) string {
+			if formatter != nil {
+				return formatter.FormatDateTime(t)
+			}
 			return t.Format("Jan 2, 2006 3:04 PM")
 		},
 		"formatDate": func(t time.Time) string {
+			if formatter != nil {
+				return formatter.FormatDate(t)
+			}
 			return t.Format("Jan 2, 2006")
 		},
 		"formatJSON": func(v interface{}) string {
@@ -81,37 +90,37 @@ func loadTemplates(dir string) (*template.Template, error) {
 		"statusClass": func(status string) string {
 			switch status {
 			case "pending_approval":
-				return "status-pending"
+				return "bg-yellow-100 text-yellow-800"
 			case "approved", "completed":
-				return "status-success"
+				return "bg-green-100 text-green-800"
 			case "denied", "cancelled":
-				return "status-error"
+				return "bg-red-100 text-red-800"
 			case "expired", "failed":
-				return "status-warning"
+				return "bg-orange-100 text-orange-800"
 			default:
-				return "status-info"
+				return "bg-blue-100 text-blue-800"
 			}
 		},
 		"statusIcon": func(status string) string {
 			switch status {
 			case "pending_approval":
-				return "⏳"
+				return "PENDING"
 			case "approved":
-				return "👍"
+				return "APPROVED"
 			case "completed":
-				return "✅"
+				return "DONE"
 			case "denied":
-				return "❌"
+				return "DENIED"
 			case "cancelled":
-				return "🚫"
+				return "CANCELLED"
 			case "expired":
-				return "⏰"
+				return "EXPIRED"
 			case "failed":
-				return "💥"
+				return "FAILED"
 			case "change_requested":
-				return "📝"
+				return "CHANGE"
 			default:
-				return "❓"
+				return "UNKNOWN"
 			}
 		},
 		"json": func(v interface{}) template.JS {
@@ -137,9 +146,14 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 	}
 
 	// Add CSRF token
-	csrfToken, _ := GenerateCSRFToken()
+	var csrfToken string
+	if session != nil && session.CSRFToken != "" {
+		csrfToken = session.CSRFToken
+	} else {
+		csrfToken, _ = GenerateCSRFToken()
+	}
 	useTLS := strings.HasPrefix(h.config.Server.BaseURL, "https://")
-	SetCSRFCookie(w, csrfToken, useTLS)
+	SetCSRFCookie(w, csrfToken, useTLS, h.sessionMgr.sessionDuration())
 	data["CSRFToken"] = csrfToken
 
 	// Add config data
@@ -170,12 +184,23 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 // LoginSubmit handles login form submission.
 func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
+	ip := clientIP(r)
+
+	if h.loginLimiter != nil && !h.loginLimiter.Allow(ip) {
+		h.render(w, r, "login.html", map[string]interface{}{
+			"Error": "Too many login attempts. Please wait and try again.",
+		})
+		return
+	}
 
 	if !h.sessionMgr.VerifyPassword(password) {
 		h.render(w, r, "login.html", map[string]interface{}{
 			"Error": "Invalid password",
 		})
 		return
+	}
+	if h.loginLimiter != nil {
+		h.loginLimiter.Reset(ip)
 	}
 
 	// Create session
@@ -191,7 +216,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	useTLS := strings.HasPrefix(h.config.Server.BaseURL, "https://")
-	SetSessionCookie(w, session.ID, useTLS)
+	SetSessionCookie(w, session.ID, useTLS, h.sessionMgr.sessionDuration())
 
 	// Redirect to dashboard
 	redirect := r.URL.Query().Get("redirect")
@@ -218,6 +243,10 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	// Get stats
 	stats, _ := h.requestRepo.GetStats(ctx)
 	apiKeyStats, _ := h.apiKeyRepo.Count(ctx)
+	totalAPIKeys := 0
+	for _, count := range apiKeyStats {
+		totalAPIKeys += count
+	}
 
 	// Get pending requests
 	pending, _ := h.requestRepo.GetPending(ctx)
@@ -225,6 +254,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "dashboard.html", map[string]interface{}{
 		"Stats":          stats,
 		"APIKeyStats":    apiKeyStats,
+		"APIKeyTotal":    totalAPIKeys,
 		"PendingCount":   len(pending),
 		"PendingRequests": pending,
 	})
@@ -448,11 +478,23 @@ func (h *Handler) TestNotification(w http.ResponseWriter, r *http.Request) {
 
 // OAuthStart initiates OAuth flow.
 func (h *Handler) OAuthStart(w http.ResponseWriter, r *http.Request) {
-	authInfo := h.oauthMgr.GetAuthURLForHeadless("schedlock")
+	state, err := google.GenerateOAuthState()
+	if err != nil {
+		http.Error(w, "Failed to generate OAuth state", http.StatusInternalServerError)
+		return
+	}
+	if err := h.oauthMgr.StoreOAuthState(r.Context(), state); err != nil {
+		http.Error(w, "Failed to store OAuth state", http.StatusInternalServerError)
+		return
+	}
+
+	authInfo := h.oauthMgr.GetAuthURLForHeadless(state)
+	instructions := strings.Split(strings.TrimSpace(authInfo.Instructions), "\n")
 
 	h.render(w, r, "oauth.html", map[string]interface{}{
 		"AuthURL":      authInfo.AuthURL,
-		"Instructions": authInfo.Instructions,
+		"Instructions": instructions,
+		"State":        state,
 	})
 }
 
@@ -462,9 +504,22 @@ func (h *Handler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if code == "" {
 		code = r.URL.Query().Get("code")
 	}
+	state := r.FormValue("state")
+	if state == "" {
+		state = r.URL.Query().Get("state")
+	}
 
 	if code == "" {
 		http.Error(w, "Authorization code required", http.StatusBadRequest)
+		return
+	}
+	if state == "" {
+		http.Error(w, "State parameter required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.oauthMgr.ValidateOAuthState(r.Context(), state); err != nil {
+		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 

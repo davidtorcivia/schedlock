@@ -75,6 +75,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	util.SetDefaultFormatter(displayFormat)
 
 	// Initialize repositories
 	apiKeyRepo := apikeys.NewRepository(db, apiKeyHasher)
@@ -94,7 +95,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	auditLogger := engine.NewAuditLogger(db)
 
 	// Initialize engine
-	eng := engine.NewEngine(cfg, requestRepo, calendarClient, auditLogger)
+	eng := engine.NewEngine(cfg, requestRepo, calendarClient, auditLogger, tokenRepo)
 
 	// Initialize notification manager
 	notificationMgr := notifications.NewManager(db, cfg)
@@ -152,7 +153,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	}
 
 	// Initialize workers
-	timeoutWorker := workers.NewTimeoutWorker(requestRepo, db, time.Duration(cfg.Approval.TimeoutMinutes)*time.Minute/2)
+	timeoutWorker := workers.NewTimeoutWorker(requestRepo, db, eng, time.Duration(cfg.Approval.TimeoutMinutes)*time.Minute/2, cfg.Approval.DefaultAction)
 	cleanupWorker := workers.NewCleanupWorker(db, &cfg.Retention)
 
 	s := &Server{
@@ -225,8 +226,8 @@ func (s *Server) StartBackgroundWorkers(ctx context.Context) error {
 	go s.webhookClient.StartRetryWorker(ctx)
 
 	// Register Telegram webhook if enabled
-	if s.config.Notifications.Telegram.Enabled && s.config.Notifications.Telegram.BotToken != "" {
-		webhookURL := s.config.Server.BaseURL + "/webhook/telegram"
+	if s.config.Notifications.Telegram.Enabled && s.config.Notifications.Telegram.BotToken != "" && s.config.Notifications.Telegram.AutoRegisterWebhook {
+		webhookURL := s.config.Server.BaseURL + s.config.Notifications.Telegram.WebhookPath
 		provider := s.notificationMgr.GetProviderByName("telegram")
 		if tgProvider, ok := provider.(*telegram.Provider); ok {
 			tgProvider.RegisterWebhookAsync(webhookURL)

@@ -64,6 +64,9 @@ func (p *Provider) setWebhook(ctx context.Context, webhookURL string) error {
 		"allowed_updates": []string{"message", "callback_query"},
 		"drop_pending_updates": false,
 	}
+	if p.config.WebhookSecret != "" {
+		req["secret_token"] = p.config.WebhookSecret
+	}
 
 	data, err := json.Marshal(req)
 	if err != nil {

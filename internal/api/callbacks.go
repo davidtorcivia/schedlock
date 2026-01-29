@@ -67,7 +67,7 @@ func (h *Handler) SuggestCallback(w http.ResponseWriter, r *http.Request) {
 <html>
 <head><title>Suggestion Submitted</title></head>
 <body style="font-family: system-ui; padding: 40px; text-align: center;">
-<h1>📝 Suggestion Submitted</h1>
+<h1>Suggestion Submitted</h1>
 <p>Your feedback has been recorded. The request has been updated.</p>
 </body>
 </html>`))
@@ -101,7 +101,7 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request, action 
 <html>
 <head><title>Error</title></head>
 <body style="font-family: system-ui; padding: 40px; text-align: center;">
-<h1>❌ Error</h1>
+<h1>Error</h1>
 <p>` + err.Error() + `</p>
 <p>This link may have expired or already been used.</p>
 </body>
@@ -121,12 +121,10 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request, action 
 
 	// Check Accept header for response format
 	if r.Header.Get("Accept") == "text/html" || r.Method == http.MethodGet {
-		var emoji, title string
+		var title string
 		if action == "approve" {
-			emoji = "✅"
 			title = "Approved"
 		} else {
-			emoji = "❌"
 			title = "Denied"
 		}
 
@@ -135,7 +133,7 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request, action 
 <html>
 <head><title>Request ` + title + `</title></head>
 <body style="font-family: system-ui; padding: 40px; text-align: center;">
-<h1>` + emoji + ` Request ` + title + `</h1>
+<h1>Request ` + title + `</h1>
 <p>The request has been ` + action + `d successfully.</p>
 </body>
 </html>`))
@@ -151,6 +149,9 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request, action 
 // HandleCallback implements the notifications.CallbackHandler interface.
 // This allows notification providers to process callbacks.
 func (h *Handler) HandleCallback(ctx context.Context, callback *notifications.Callback) error {
+	if h.notificationMgr != nil {
+		h.notificationMgr.MarkCallback(ctx, callback.Provider, callback.RequestID, callback.MessageID)
+	}
 	switch callback.Action {
 	case "approve", "deny":
 		return h.engine.ProcessApproval(ctx, callback.RequestID, callback.Action, callback.RespondedBy)

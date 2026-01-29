@@ -34,12 +34,19 @@ A Calendar Proxy service that provides human-in-the-loop approval for AI agent c
    # Generate server secret
    openssl rand -base64 32
 
-   # Generate password hash (run the binary or use online Argon2 tool)
+   # Generate encryption key
+   openssl rand -base64 32
+
+   # Generate password hash (run the binary)
+   ./schedlock hash-password "YourPassword"
+
+   # Or use an Argon2id tool
    # Format: $argon2id$v=19$m=65536,t=3,p=4$SALT$HASH
    ```
 
 3. **Configure `.env`** with your:
    - Server secret
+   - Encryption key
    - Password hash
    - Google OAuth credentials
    - Notification provider settings
@@ -90,7 +97,7 @@ GET /api/calendar/freebusy?timeMin=...&timeMax=...
 # Create event
 POST /api/calendar/events/create
 {
-  "calendar_id": "primary",
+  "calendarId": "primary",
   "summary": "Team Meeting",
   "start": "2024-01-15T10:00:00-05:00",
   "end": "2024-01-15T11:00:00-05:00",
@@ -132,7 +139,9 @@ POST /api/requests/{requestId}/cancel
 | Environment Variable | Description | Required |
 |---------------------|-------------|----------|
 | `SCHEDLOCK_SERVER_SECRET` | HMAC key for API key hashing | Yes |
+| `SCHEDLOCK_ENCRYPTION_KEY` | Encryption key for OAuth token storage | Yes |
 | `SCHEDLOCK_AUTH_PASSWORD_HASH` | Admin password (Argon2id) | Yes |
+| `SCHEDLOCK_ADMIN_PASSWORD` | Admin password (plaintext, dev only) | No |
 | `SCHEDLOCK_GOOGLE_CLIENT_ID` | Google OAuth client ID | Yes |
 | `SCHEDLOCK_GOOGLE_CLIENT_SECRET` | Google OAuth secret | Yes |
 | `SCHEDLOCK_BASE_URL` | Public URL for callbacks | Yes |
@@ -156,7 +165,7 @@ SCHEDLOCK_NTFY_SERVER_URL=https://ntfy.sh
 
 ```env
 SCHEDLOCK_PUSHOVER_ENABLED=true
-SCHEDLOCK_PUSHOVER_TOKEN=your-app-token
+SCHEDLOCK_PUSHOVER_APP_TOKEN=your-app-token
 SCHEDLOCK_PUSHOVER_USER_KEY=your-user-key
 ```
 
@@ -166,6 +175,7 @@ SCHEDLOCK_PUSHOVER_USER_KEY=your-user-key
 SCHEDLOCK_TELEGRAM_ENABLED=true
 SCHEDLOCK_TELEGRAM_BOT_TOKEN=123456:ABC...
 SCHEDLOCK_TELEGRAM_CHAT_ID=your-chat-id
+SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET=your-secret-token
 ```
 
 ## Security
@@ -174,6 +184,7 @@ SCHEDLOCK_TELEGRAM_CHAT_ID=your-chat-id
 - OAuth tokens encrypted with AES-256-GCM
 - Single-use decision tokens for approval callbacks
 - Rate limiting per API key tier
+- Rate limiting on web UI login (per IP)
 - CSRF protection on web UI
 - Secure session management
 

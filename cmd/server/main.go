@@ -11,12 +11,30 @@ import (
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/config"
+	schedcrypto "github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/server"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hash-password":
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "Usage: schedlock hash-password \"YourPassword\"")
+				os.Exit(1)
+			}
+			hash, err := schedcrypto.HashPassword(os.Args[2])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error hashing password: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(hash)
+			return
+		}
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

@@ -147,6 +147,9 @@ func (m *OAuthManager) GetValidToken(ctx context.Context) (*oauth2.Token, error)
 			util.Error("OAuth token refresh failed", "error", err)
 			return nil, fmt.Errorf("token refresh failed: %w", err)
 		}
+		if newToken.RefreshToken == "" {
+			newToken.RefreshToken = token.RefreshToken
+		}
 
 		// Save the new token (Google may rotate refresh token)
 		if err := m.saveToken(ctx, newToken); err != nil {

@@ -203,7 +203,7 @@ func (eq *ExecutionQueue) worker() {
 ### 4.1 Base URL & Versioning
 
 ```
-Base URL: /api/v1
+Base URL: /api
 Content-Type: application/json
 ```
 
@@ -220,41 +220,39 @@ Authorization: Bearer <api_key>
 
 | Method | Endpoint | Description | Tiers |
 |--------|----------|-------------|-------|
-| GET | `/calendars` | List accessible calendars | read, write, admin |
-| GET | `/calendars/{id}/events` | List events (with query params) | read, write, admin |
-| GET | `/events/{id}` | Get single event | read, write, admin |
-| POST | `/events` | Create event | write, admin |
-| PUT | `/events/{id}` | Update event | write, admin |
-| DELETE | `/events/{id}` | Delete event | write, admin |
-| POST | `/freebusy` | Check availability | read, write, admin |
+| GET | `/api/calendar/list` | List accessible calendars | read, write, admin |
+| GET | `/api/calendar/{calendarId}/events` | List events (with query params) | read, write, admin |
+| GET | `/api/calendar/{calendarId}/events/{eventId}` | Get single event | read, write, admin |
+| GET/POST | `/api/calendar/freebusy` | Check availability | read, write, admin |
+| POST | `/api/calendar/events/create` | Create event | write, admin |
+| POST | `/api/calendar/events/update` | Update event | write, admin |
+| POST | `/api/calendar/events/delete` | Delete event | write, admin |
 
 #### 4.3.2 Request Management
 
 | Method | Endpoint | Description | Tiers |
 |--------|----------|-------------|-------|
-| GET | `/requests/{id}` | Get request status | all |
-| GET | `/requests/{id}/result` | Get completed request result | all |
-| DELETE | `/requests/{id}` | Cancel pending request | all (own requests) |
+| GET | `/api/requests` | List requests for API key | read, write, admin |
+| GET | `/api/requests/{requestId}` | Get request status (includes result when completed) | read, write, admin |
+| POST | `/api/requests/{requestId}/cancel` | Cancel pending request | write, admin (own requests) |
 
 #### 4.3.3 Approval Callbacks (Internal)
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/callbacks/approve/{token}` | Approve request | signed token |
-| POST | `/callbacks/deny/{token}` | Deny request | signed token |
-| POST | `/callbacks/suggest/{token}` | Request changes (from web UI) | signed token |
+| POST | `/api/callback/approve/{token}` | Approve request | decision token |
+| POST | `/api/callback/deny/{token}` | Deny request | decision token |
+| POST | `/api/callback/suggest/{token}` | Request changes | decision token |
 
 #### 4.3.4 Suggestion Endpoint (Web UI)
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| POST | `/api/v1/requests/{id}/suggest` | Submit change suggestion | session cookie |
+| POST | `/requests/{requestId}/suggest` | Submit change suggestion | session cookie + CSRF |
 
-Request body:
-```json
-{
-  "suggestion": "Move to 3pm instead, and add Bob to attendees"
-}
+Form field:
+```
+suggestion=Move to 3pm instead, and add Bob to attendees
 ```
 
 #### 4.3.5 Telegram Webhook
@@ -268,7 +266,7 @@ Request body:
 #### 4.4.1 Synchronous Response (Read Operations)
 
 ```http
-GET /api/v1/calendars/primary/events?timeMin=2026-01-28T00:00:00Z&maxResults=10
+GET /api/calendar/primary/events?timeMin=2026-01-28T00:00:00Z&maxResults=10
 Authorization: Bearer sk_read_xxx
 
 HTTP/1.1 200 OK
@@ -283,14 +281,14 @@ HTTP/1.1 200 OK
       "attendees": ["alice@example.com"]
     }
   ],
-  "nextPageToken": "token123"
+  "next_page_token": "token123"
 }
 ```
 
 #### 4.4.2 Asynchronous Response (Write Operations Requiring Approval)
 
 ```http
-POST /api/v1/events
+POST /api/calendar/events/create
 Authorization: Bearer sk_write_xxx
 Content-Type: application/json
 
@@ -305,31 +303,28 @@ Content-Type: application/json
 
 HTTP/1.1 202 Accepted
 {
-  "requestId": "req_a1b2c3d4",
+  "request_id": "req_a1b2c3d4",
   "status": "pending_approval",
-  "operation": "create_event",
-  "statusUrl": "/api/v1/requests/req_a1b2c3d4",
-  "expiresAt": "2026-01-28T13:00:00Z",
-  "message": "Request submitted. Awaiting human approval."
+  "expires_at": "2026-01-28T13:00:00Z",
+  "message": "Event creation request submitted"
 }
 ```
 
 #### 4.4.3 Polling for Status
 
 ```http
-GET /api/v1/requests/req_a1b2c3d4
+GET /api/requests/req_a1b2c3d4
 Authorization: Bearer sk_write_xxx
 
 HTTP/1.1 200 OK
 {
-  "requestId": "req_a1b2c3d4",
+  "id": "req_a1b2c3d4",
   "status": "approved",
   "operation": "create_event",
-  "createdAt": "2026-01-28T12:00:00Z",
-  "expiresAt": "2026-01-28T13:00:00Z",
-  "decidedAt": "2026-01-28T12:05:00Z",
-  "decidedBy": "pushover",
-  "resultUrl": "/api/v1/requests/req_a1b2c3d4/result"
+  "created_at": "2026-01-28T12:00:00Z",
+  "expires_at": "2026-01-28T13:00:00Z",
+  "decided_at": "2026-01-28T12:05:00Z",
+  "decided_by": "pushover"
 }
 ```
 
@@ -338,26 +333,20 @@ HTTP/1.1 200 OK
 When status is `change_requested`, the response includes the approver's suggestion:
 
 ```http
-GET /api/v1/requests/req_a1b2c3d4
+GET /api/requests/req_a1b2c3d4
 Authorization: Bearer sk_write_xxx
 
 HTTP/1.1 200 OK
 {
-  "requestId": "req_a1b2c3d4",
+  "id": "req_a1b2c3d4",
   "status": "change_requested",
   "operation": "create_event",
-  "createdAt": "2026-01-28T12:00:00Z",
-  "expiresAt": "2026-01-28T13:00:00Z",
+  "created_at": "2026-01-28T12:00:00Z",
+  "expires_at": "2026-01-28T13:00:00Z",
   "suggestion": {
     "text": "Move to 3pm instead, and add Bob to attendees",
-    "suggestedAt": "2026-01-28T12:05:00Z",
-    "suggestedBy": "telegram"
-  },
-  "originalPayload": {
-    "calendarId": "primary",
-    "summary": "Project Review",
-    "start": "2026-01-30T10:00:00Z",
-    "end": "2026-01-30T11:00:00Z"
+    "suggested_at": "2026-01-28T12:05:00Z",
+    "suggested_by": "telegram"
   }
 }
 ```
@@ -365,7 +354,7 @@ HTTP/1.1 200 OK
 The bot should:
 1. Parse the suggestion and modify the request accordingly
 2. Submit a new request with the changes (which will go through approval again)
-3. Optionally cancel the original request via `DELETE /api/v1/requests/{id}`
+3. Optionally cancel the original request via `POST /api/requests/{id}/cancel`
 
 **Status Values:**
 | Status | Description |
@@ -381,18 +370,19 @@ The bot should:
 
 #### 4.4.5 Getting the Result
 
+The request status endpoint includes the result once the request is completed:
+
 ```http
-GET /api/v1/requests/req_a1b2c3d4/result
+GET /api/requests/req_a1b2c3d4
 Authorization: Bearer sk_write_xxx
 
 HTTP/1.1 200 OK
 {
-  "requestId": "req_a1b2c3d4",
+  "id": "req_a1b2c3d4",
   "status": "completed",
   "result": {
-    "eventId": "google_event_xyz",
-    "htmlLink": "https://calendar.google.com/event?eid=xyz",
-    "created": "2026-01-28T12:05:30Z"
+    "id": "google_event_xyz",
+    "html_link": "https://calendar.google.com/event?eid=xyz"
   }
 }
 ```
@@ -404,7 +394,6 @@ HTTP/1.1 200 OK
   "error": {
     "code": "APPROVAL_DENIED",
     "message": "Request was denied by approver",
-    "requestId": "req_a1b2c3d4",
     "details": {}
   }
 }
@@ -428,7 +417,7 @@ HTTP/1.1 200 OK
 |-----------|------|-------------|
 | `timeMin` | datetime | Lower bound (exclusive), RFC3339 with timezone |
 | `timeMax` | datetime | Upper bound (exclusive), RFC3339 with timezone |
-| `maxResults` | integer | Max events to return (default: 25, max: 250) |
+| `maxResults` | integer | Max events to return (default: 50, max: 250) |
 | `pageToken` | string | Pagination token |
 | `q` | string | Free text search |
 | `singleEvents` | boolean | Expand recurring events (default: true) |
@@ -475,7 +464,7 @@ type Reminder struct {
 - `source` — External source info
 
 **Update Operations (PATCH semantics)**:
-For `PUT /events/{id}`, only provided fields are updated. The proxy shows a **diff** to the approver:
+For `POST /api/calendar/events/update`, only provided fields are updated. The proxy shows a **diff** to the approver:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -498,7 +487,7 @@ Idempotency-Key: <unique_key>
 
 **Behavior**:
 1. If `(api_key_id, idempotency_key)` exists and is < 24 hours old:
-   - Return the existing request (same `requestId`, current status)
+   - Return the existing request (same `request_id`, current status)
    - Do NOT create a new pending request
 2. If it doesn't exist:
    - Create new request, store the idempotency key
@@ -521,49 +510,43 @@ CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
 ```bash
 # First request
 curl -X POST -H "Idempotency-Key: create-meeting-2026-01-30-v1" ...
-# Returns: {"requestId": "req_abc123", "status": "pending_approval"}
+# Returns: {"request_id": "req_abc123", "status": "pending_approval"}
 
 # Retry (network timeout, etc.)
 curl -X POST -H "Idempotency-Key: create-meeting-2026-01-30-v1" ...
-# Returns: {"requestId": "req_abc123", "status": "approved"}  # Same request, current status
+# Returns: {"request_id": "req_abc123", "status": "approved"}  # Same request, current status
 ```
 
 ### 4.9 HTTP Status Code Semantics
 
-**Write Operations (POST /events, PUT /events/{id}, DELETE /events/{id})**:
+**Write Operations (POST /api/calendar/events/create|update|delete)**:
 
 | Scenario | Status | Body |
 |----------|--------|------|
-| Approval required | `202 Accepted` | `{requestId, status: "pending_approval", statusUrl}` |
-| Auto-approved (admin) | `200 OK` | `{requestId, status: "completed", result: {...}}` |
+| Approval required | `202 Accepted` | `{request_id, status: "pending_approval"}` |
+| Auto-approved (admin/policy) | `200 OK` | `{request_id, status: "approved"}` |
 | Constraint violation | `403 Forbidden` | `{error: {code: "CONSTRAINT_VIOLATION", ...}}` |
 | Validation error | `400 Bad Request` | `{error: {code: "VALIDATION_ERROR", ...}}` |
 
-**Request Status (GET /requests/{id})**:
+**Request Status (GET /api/requests/{id})**:
 
 | Scenario | Status | Body |
 |----------|--------|------|
-| Request exists (any state) | `200 OK` | `{requestId, status, ...}` |
+| Request exists (any state) | `200 OK` | `{id, status, ...}` |
 | Request not found | `404 Not Found` | `{error: {code: "REQUEST_NOT_FOUND"}}` |
 
-**Request Result (GET /requests/{id}/result)**:
+**Request Result**
+
+The request status endpoint includes `result` once the request is completed.
+
+**Cancel Request (POST /api/requests/{id}/cancel)**:
 
 | Scenario | Status | Body |
 |----------|--------|------|
-| Completed | `200 OK` | `{requestId, result: {...}}` |
-| Not yet completed | `409 Conflict` | `{error: {code: "NOT_COMPLETED", status: "pending_approval"}}` |
-| Denied | `200 OK` | `{requestId, status: "denied", result: null}` |
-| Expired (purged) | `410 Gone` | `{error: {code: "REQUEST_EXPIRED"}}` |
+| Successfully cancelled | `200 OK` | `{message: "request cancelled"}` |
+| Not allowed / already resolved | `400 Bad Request` | `{error: {...}}` |
 
-**Cancel Request (DELETE /requests/{id})**:
-
-| Scenario | Status | Body |
-|----------|--------|------|
-| Successfully cancelled | `200 OK` | `{requestId, status: "cancelled"}` |
-| Already resolved | `409 Conflict` | `{error: {code: "ALREADY_RESOLVED", status: "completed"}}` |
-| Not found | `404 Not Found` | `{error: {...}}` |
-
-Note: `DELETE /requests/{id}` marks as `cancelled`, does NOT delete from database (preserves audit trail).
+Note: Cancel marks the request as `cancelled` and does NOT delete it (preserves audit trail).
 
 ---
 
@@ -651,13 +634,13 @@ Default per-tier settings (overridable per-key):
 
 | Operation | Read Tier | Write Tier (Default) | Admin Tier |
 |-----------|-----------|---------------------|------------|
-| List calendars | ✅ Auto | ✅ Auto | ✅ Auto |
-| List events | ✅ Auto | ✅ Auto | ✅ Auto |
-| Get event | ✅ Auto | ✅ Auto | ✅ Auto |
-| Freebusy | ✅ Auto | ✅ Auto | ✅ Auto |
-| Create event | ❌ Denied | ⏳ Requires Approval | ✅ Auto (logged) |
-| Update event | ❌ Denied | ⏳ Requires Approval | ✅ Auto (logged) |
-| Delete event | ❌ Denied | ⏳ Requires Approval | ✅ Auto (logged) |
+| List calendars | Auto | Auto | Auto |
+| List events | Auto | Auto | Auto |
+| Get event | Auto | Auto | Auto |
+| Freebusy | Auto | Auto | Auto |
+| Create event | Denied | Requires approval | Auto (logged) |
+| Update event | Denied | Requires approval | Auto (logged) |
+| Delete event | Denied | Requires approval | Auto (logged) |
 
 ### 5.5 Rate Limiting
 
@@ -672,14 +655,14 @@ Implementation: Token bucket algorithm with in-memory storage. Counters reset on
 ### 5.5 Web UI Authentication
 
 **Primary**: Local password authentication
-- Password set via `ADMIN_PASSWORD` environment variable
-- Hashed with Argon2id on first run, stored in database
+- Password hash set via `SCHEDLOCK_AUTH_PASSWORD_HASH` (Argon2id)
+- Optional dev-only plaintext via `SCHEDLOCK_ADMIN_PASSWORD`
+- Hash is configured via env and is not persisted to the database
 - Session cookie: HTTP-only, Secure, SameSite=Strict
 
 **Optional Enhancement**: Cloudflare Access
-- Validate `Cf-Access-Jwt-Assertion` header
-- Check against configured team and audience
-- Can combine with local password for defense in depth
+- Use Cloudflare Access at the reverse proxy or tunnel layer
+- Built-in JWT validation is not implemented in the current build
 
 ### 5.6 Session Management
 
@@ -780,20 +763,20 @@ POST https://ntfy.sh/{topic}
 Authorization: Bearer {token}  // if auth configured
 
 Headers:
-  Title: 📅 Calendar: Create Event
+  Title: Calendar: Create Event
   Priority: high
   Tags: calendar,moltbot
-  Actions: http, ✅ Approve, {approve_url}, method=POST, clear=true; 
-           http, ❌ Deny, {deny_url}, method=POST, clear=true;
-           view, ✏️ Suggest Change, {suggest_url}
+  Actions: http, Approve, {approve_url}, method=POST, clear=true; 
+           http, Deny, {deny_url}, method=POST, clear=true;
+           view, Suggest Change, {suggest_url}
 
 Body:
 Moltbot wants to create an event:
 
-📅 {title}
-🕐 {start_time} - {end_time}
-📍 {location}
-👥 {attendees}
+Title: {title}
+When: {start_time} - {end_time}
+Location: {location}
+Attendees: {attendees}
 
 Request: {request_id}
 Expires: {expires_in}
@@ -821,7 +804,7 @@ When using the public ntfy.sh server, notification content traverses third-party
 
 | Field | Full Content | Minimal Content |
 |-------|--------------|-----------------|
-| Title | "📅 Calendar: Create Event" | "📅 Calendar Request" |
+| Title | "Calendar: Create Event" | "Calendar Request" |
 | Body | Full event details | "Review pending request" |
 | Attendees | Listed | Not included |
 | Location | Shown | Not included |
@@ -849,7 +832,7 @@ Content-Type: application/x-www-form-urlencoded
 
 token={app_token}
 &user={user_key}
-&title=📅 Calendar: Create Event
+&title=Calendar: Create Event
 &message=Moltbot wants to create:
 
 {title}
@@ -890,22 +873,22 @@ Content-Type: application/json
 
 {
   "chat_id": "{chat_id}",
-  "text": "🗓 *Calendar Request*\n\nMoltbot wants to create an event:\n\n*{title}*\n🕐 {start_time} - {end_time}\n📍 {location}\n\nRequest: `{request_id}`\nExpires: {expires_in}\n\n_Reply to this message to suggest changes_",
+  "text": "*Calendar Request*\n\nMoltbot wants to create an event:\n\n*{title}*\nWhen: {start_time} - {end_time}\nLocation: {location}\n\nRequest: `{request_id}`\nExpires: {expires_in}\n\n_Reply to this message to suggest changes_",
   "parse_mode": "Markdown",
   "reply_markup": {
     "inline_keyboard": [[
-      {"text": "✅ Approve", "callback_data": "approve:{request_id}:{signature}"},
-      {"text": "❌ Deny", "callback_data": "deny:{request_id}:{signature}"}
+      {"text": "Approve", "callback_data": "approve:{request_id}:{signature}"},
+      {"text": "Deny", "callback_data": "deny:{request_id}:{signature}"}
     ], [
-      {"text": "✏️ Suggest Change", "callback_data": "suggest:{request_id}:{signature}"},
-      {"text": "🔍 View Details", "url": "{web_url}"}
+      {"text": "Suggest Change", "callback_data": "suggest:{request_id}:{signature}"},
+      {"text": "View Details", "url": "{web_url}"}
     ]]
   }
 }
 ```
 
 **Suggest Change Flow**:
-1. User taps "✏️ Suggest Change" button
+1. User taps "Suggest Change" button
 2. Bot replies: "Please reply to this message with your suggested changes"
 3. User replies with text (e.g., "Move to 3pm and add Bob")
 4. Webhook receives the reply, matches it to the original request via `reply_to_message`
@@ -1010,12 +993,12 @@ func (t *TelegramProvider) RegisterWebhookWithRetry(baseURL string) error {
     for attempt := 0; attempt < maxRetries; attempt++ {
         // First, verify our own URL is reachable (tunnel is up)
         if err := t.checkURLReachable(webhookURL); err != nil {
-            log.Printf("BASE_URL not reachable (attempt %d/%d): %v", attempt+1, maxRetries, err)
+            log.Printf("SCHEDLOCK_BASE_URL not reachable (attempt %d/%d): %v", attempt+1, maxRetries, err)
             if attempt < maxRetries-1 {
                 time.Sleep(backoff[attempt])
                 continue
             }
-            return fmt.Errorf("BASE_URL not reachable after %d attempts: %w", maxRetries, err)
+            return fmt.Errorf("SCHEDLOCK_BASE_URL not reachable after %d attempts: %w", maxRetries, err)
         }
         
         // URL is reachable, register with Telegram
@@ -1066,7 +1049,7 @@ func (t *TelegramProvider) checkURLReachable(url string) error {
 
 This runs:
 - On first startup after Telegram is enabled (with retry)
-- When `BASE_URL` changes
+- When `SCHEDLOCK_BASE_URL` changes
 - Via "Re-register Webhook" button in Web UI settings (no retry, immediate feedback)
 
 **Manual Setup** (if auto-registration fails):
@@ -1089,8 +1072,8 @@ When approval is required:
 Callback URLs use **single-use decision tokens** stored server-side to prevent replay and forgery:
 
 ```
-URL Format: /callbacks/{action}/{decision_token}
-Example: /callbacks/approve/dtok_x7k9m2p4q8r1s5t3
+URL Format: /api/callback/{action}/{decision_token}
+Example: /api/callback/approve/dtok_x7k9m2p4q8r1s5t3
 
 Decision Token:
 - Generated: Random 128-bit value, base62 encoded
@@ -1315,7 +1298,7 @@ Non-retryable errors (immediately mark as failed):
 ```
 Bot                 Proxy               Notifiers           Approver        Google
  │                    │                     │                   │              │
- │ POST /events       │                     │                   │              │
+ │ POST /api/calendar/events/create │         │                   │              │
  │───────────────────►│                     │                   │              │
  │                    │                     │                   │              │
  │                    │ Validate request    │                   │              │
@@ -1324,11 +1307,11 @@ Bot                 Proxy               Notifiers           Approver        Goog
  │                    │                     │                   │              │
  │ 202 Accepted       │ Send to all enabled │                   │              │
  │◄───────────────────│────────────────────►│                   │              │
- │ {requestId}        │                     │                   │              │
+ │ {request_id}       │                     │                   │              │
  │                    │                     │ Push notification │              │
  │                    │                     │──────────────────►│              │
  │                    │                     │                   │              │
- │ GET /requests/{id} │                     │                   │              │
+ │ GET /api/requests/{id} │                  │                   │              │
  │───────────────────►│                     │                   │              │
  │ {status:pending}   │                     │                   │              │
  │◄───────────────────│                     │                   │              │
@@ -1336,14 +1319,14 @@ Bot                 Proxy               Notifiers           Approver        Goog
  │      ...           │                     │   Tap Approve     │              │
  │                    │                     │◄──────────────────│              │
  │                    │                     │                   │              │
- │                    │ POST /callbacks/    │                   │              │
+ │                    │ POST /api/callback/ │                   │              │
  │                    │   approve/{token}   │                   │              │
  │                    │◄────────────────────│                   │              │
  │                    │                     │                   │              │
  │                    │ Validate token      │                   │              │
  │                    │ Update status=approved                  │              │
  │                    │                     │                   │              │
- │                    │ POST /calendar/events                   │              │
+ │                    │ POST Google Calendar API                 │              │
  │                    │─────────────────────────────────────────────────────►│
  │                    │                     │                   │              │
  │                    │ 200 OK {eventId}    │                   │              │
@@ -1352,14 +1335,9 @@ Bot                 Proxy               Notifiers           Approver        Goog
  │                    │ Update status=completed                 │              │
  │                    │ Store result        │                   │              │
  │                    │                     │                   │              │
- │ GET /requests/{id} │                     │                   │              │
+ │ GET /api/requests/{id} │                  │                   │              │
  │───────────────────►│                     │                   │              │
- │ {status:completed} │                     │                   │              │
- │◄───────────────────│                     │                   │              │
- │                    │                     │                   │              │
- │ GET /requests/{id}/result               │                   │              │
- │───────────────────►│                     │                   │              │
- │ {eventId,htmlLink} │                     │                   │              │
+ │ {status:completed, result:{...}}          │                   │              │
  │◄───────────────────│                     │                   │              │
 ```
 
@@ -1368,7 +1346,7 @@ Bot                 Proxy               Notifiers           Approver        Goog
 ```
 Bot                 Proxy               Notifiers           Approver        Moltbot
  │                    │                     │                   │           Webhook
- │ POST /events       │                     │                   │              │
+ │ POST /api/calendar/events/create │        │                   │              │
  │───────────────────►│                     │                   │              │
  │                    │ Store pending       │                   │              │
  │ 202 Accepted       │                     │                   │              │
@@ -1399,7 +1377,7 @@ Bot                 Proxy               Notifiers           Approver        Molt
  │   webhook, parses  │                     │                   │              │
  │   suggestion)      │                     │                   │              │
  │                    │                     │                   │              │
- │ POST /events       │                     │                   │              │
+ │ POST /api/calendar/events/create │        │                   │              │
  │  (modified)        │                     │                   │              │
  │───────────────────►│                     │                   │              │
  │                    │ New approval cycle begins...            │              │
@@ -1708,7 +1686,7 @@ OAuth tokens are encrypted using AES-256-GCM:
 
 ```go
 type TokenEncryption struct {
-    key []byte  // 32 bytes from ENCRYPTION_KEY env var
+    key []byte  // 32 bytes from SCHEDLOCK_ENCRYPTION_KEY env var
 }
 
 func (e *TokenEncryption) Encrypt(plaintext string) ([]byte, error) {
@@ -1729,10 +1707,7 @@ func (e *TokenEncryption) Decrypt(ciphertext []byte) (string, error) {
 }
 ```
 
-Key derivation if `ENCRYPTION_KEY` not provided:
-```go
-key := hkdf.New(sha256.New, []byte(SECRET_KEY), nil, []byte("calendar-proxy-encryption"))
-```
+Note: `SCHEDLOCK_ENCRYPTION_KEY` is required in the current implementation (no automatic derivation).
 
 ### 8.4 Google OAuth Token Refresh
 
@@ -1977,7 +1952,7 @@ export CALENDAR_PROXY_KEY="sk_write_..."
 **Read operations** (list, get, freebusy) execute immediately.
 
 **Write operations** (create, update, delete) require human approval:
-1. Request is submitted and returns a `requestId`
+1. Request is submitted and returns a `request_id`
 2. User receives push notification to approve/deny
 3. You must poll the status endpoint until resolved
 4. Once approved, retrieve the result
@@ -1990,7 +1965,7 @@ export CALENDAR_PROXY_KEY="sk_write_..."
 
 ```bash
 curl -s -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-  "$CALENDAR_PROXY_URL/api/v1/calendars" | jq '.calendars[] | {id, summary}'
+  "$CALENDAR_PROXY_URL/api/calendar/list" | jq '.calendars[] | {id, summary}'
 ```
 
 ### List Upcoming Events
@@ -1998,7 +1973,7 @@ curl -s -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
 ```bash
 # Events from now until end of week
 curl -s -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-  "$CALENDAR_PROXY_URL/api/v1/calendars/primary/events?\
+  "$CALENDAR_PROXY_URL/api/calendar/primary/events?\
 timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)&\
 maxResults=20&\
 orderBy=startTime" | jq '.events[] | {summary, start, end}'
@@ -2009,7 +1984,7 @@ orderBy=startTime" | jq '.events[] | {summary, start, end}'
 ```bash
 # Events for specific date
 curl -s -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-  "$CALENDAR_PROXY_URL/api/v1/calendars/primary/events?\
+  "$CALENDAR_PROXY_URL/api/calendar/primary/events?\
 timeMin=2026-01-30T00:00:00Z&\
 timeMax=2026-01-31T00:00:00Z" | jq
 ```
@@ -2020,7 +1995,7 @@ timeMax=2026-01-31T00:00:00Z" | jq
 curl -s -X POST \
   -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
   -H "Content-Type: application/json" \
-  "$CALENDAR_PROXY_URL/api/v1/freebusy" \
+  "$CALENDAR_PROXY_URL/api/calendar/freebusy" \
   -d '{
     "timeMin": "2026-01-30T09:00:00Z",
     "timeMax": "2026-01-30T18:00:00Z",
@@ -2035,7 +2010,7 @@ curl -s -X POST \
 RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
   -H "Content-Type: application/json" \
-  "$CALENDAR_PROXY_URL/api/v1/events" \
+  "$CALENDAR_PROXY_URL/api/calendar/events/create" \
   -d '{
     "calendarId": "primary",
     "summary": "Meeting with Team",
@@ -2046,7 +2021,7 @@ RESPONSE=$(curl -s -X POST \
     "attendees": ["alice@example.com", "bob@example.com"]
   }')
 
-REQUEST_ID=$(echo "$RESPONSE" | jq -r '.requestId')
+REQUEST_ID=$(echo "$RESPONSE" | jq -r '.request_id')
 echo "Submitted request: $REQUEST_ID"
 echo "Waiting for approval (check your phone)..."
 
@@ -2058,7 +2033,7 @@ poll_status() {
   while true; do
     STATUS_RESPONSE=$(curl -s \
       -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-      "$CALENDAR_PROXY_URL/api/v1/requests/$REQUEST_ID")
+      "$CALENDAR_PROXY_URL/api/requests/$REQUEST_ID")
     
     STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
     
@@ -2070,7 +2045,7 @@ poll_status() {
       "change_requested")
         # User wants modifications - extract suggestion and handle it
         SUGGESTION=$(echo "$STATUS_RESPONSE" | jq -r '.suggestion.text')
-        ORIGINAL=$(echo "$STATUS_RESPONSE" | jq -r '.originalPayload')
+        ORIGINAL=$(echo "$STATUS_RESPONSE" | jq -r '.payload')
         echo "User requested changes: $SUGGESTION"
         echo "Original request: $ORIGINAL"
         # Return special code so caller knows to modify and resubmit
@@ -2083,7 +2058,7 @@ poll_status() {
       "completed")
         echo "Event created successfully!"
         curl -s -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-          "$CALENDAR_PROXY_URL/api/v1/requests/$REQUEST_ID/result" | jq
+          "$CALENDAR_PROXY_URL/api/requests/$REQUEST_ID" | jq '.result'
         return 0
         ;;
       "denied")
@@ -2125,10 +2100,10 @@ When the user suggests changes instead of approving/denying, you'll receive:
   "status": "change_requested",
   "suggestion": {
     "text": "Move to 3pm instead, and add Bob to attendees",
-    "suggestedAt": "2026-01-28T12:05:00Z",
-    "suggestedBy": "telegram"
+    "suggested_at": "2026-01-28T12:05:00Z",
+    "suggested_by": "telegram"
   },
-  "originalPayload": { ... }
+  "payload": { ... }
 }
 ```
 
@@ -2136,19 +2111,20 @@ When the user suggests changes instead of approving/denying, you'll receive:
 1. Parse the suggestion text to understand what changes are needed
 2. Modify the original payload accordingly
 3. Submit a new request (which will go through approval again)
-4. Optionally cancel the original request: `DELETE /api/v1/requests/{original_id}`
+4. Optionally cancel the original request: `POST /api/requests/{original_id}/cancel`
 5. Inform the user: "I've updated the request based on your feedback. Please approve the new version."
 
 ### Update Event (Requires Approval)
 
 ```bash
 # Only include fields you want to change
-RESPONSE=$(curl -s -X PUT \
+RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
   -H "Content-Type: application/json" \
-  "$CALENDAR_PROXY_URL/api/v1/events/{eventId}" \
+  "$CALENDAR_PROXY_URL/api/calendar/events/update" \
   -d '{
     "calendarId": "primary",
+    "eventId": "eventId",
     "summary": "Updated: Meeting with Team",
     "location": "Virtual - Zoom"
   }')
@@ -2159,9 +2135,14 @@ RESPONSE=$(curl -s -X PUT \
 ### Delete Event (Requires Approval)
 
 ```bash
-RESPONSE=$(curl -s -X DELETE \
+RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $CALENDAR_PROXY_KEY" \
-  "$CALENDAR_PROXY_URL/api/v1/events/{eventId}?calendarId=primary")
+  -H "Content-Type: application/json" \
+  "$CALENDAR_PROXY_URL/api/calendar/events/delete" \
+  -d '{
+    "calendarId": "primary",
+    "eventId": "eventId"
+  }')
 
 # Then poll as above...
 ```
@@ -2186,16 +2167,16 @@ The proxy accepts a **constrained schema** for event operations. Unknown fields 
 **Supported Fields**:
 | Field | Type | Create | Update | Notes |
 |-------|------|--------|--------|-------|
-| `calendarId` | string | ✅ Required | ✅ Required | "primary" or calendar ID |
-| `summary` | string | ✅ Required | ✅ | Event title |
-| `start` | datetime | ✅ Required | ✅ | RFC3339 with timezone |
-| `end` | datetime | ✅ Required | ✅ | RFC3339 with timezone |
-| `description` | string | ✅ | ✅ | Event description |
-| `location` | string | ✅ | ✅ | Location text |
-| `attendees` | string[] | ✅ | ✅ | Email addresses |
-| `colorId` | string | ✅ | ✅ | Event color (1-11) |
-| `visibility` | string | ✅ | ✅ | "default", "public", "private" |
-| `reminders` | object | ✅ | ✅ | Custom reminders |
+| `calendarId` | string | Required | Required | "primary" or calendar ID |
+| `summary` | string | Required | Optional | Event title |
+| `start` | datetime | Required | Optional | RFC3339 with timezone |
+| `end` | datetime | Required | Optional | RFC3339 with timezone |
+| `description` | string | Optional | Optional | Event description |
+| `location` | string | Optional | Optional | Location text |
+| `attendees` | string[] | Optional | Optional | Email addresses |
+| `colorId` | string | Optional | Optional | Event color (1-11) |
+| `visibility` | string | Optional | Optional | "default", "public", "private" |
+| `reminders` | object | Optional | Optional | Custom reminders |
 
 **NOT Supported** (silently dropped):
 - `conferenceData` — Video conferencing
@@ -2269,12 +2250,12 @@ wait_for_approval() {
       return 1
     fi
     
-    local response=$(calendar_api GET "/api/v1/requests/$request_id")
+    local response=$(calendar_api GET "/api/requests/$request_id")
     local status=$(echo "$response" | jq -r '.status')
     
     case "$status" in
       "completed")
-        calendar_api GET "/api/v1/requests/$request_id/result"
+        echo "$response" | jq '.result'
         return 0
         ;;
       "denied"|"expired"|"failed")
@@ -2315,7 +2296,7 @@ wait_for_approval() {
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  ┌─────────────────────────┐  ┌─────────────────────────┐              │
-│  │  ⏳ Pending Approvals   │  │  📊 Today's Activity     │              │
+│  │  Pending Approvals   │  │  Today's Activity     │              │
 │  │                         │  │                         │              │
 │  │        3                │  │   12 requests           │              │
 │  │                         │  │   11 approved           │              │
@@ -2323,20 +2304,20 @@ wait_for_approval() {
 │  └─────────────────────────┘  └─────────────────────────┘              │
 │                                                                         │
 │  ┌─────────────────────────┐  ┌─────────────────────────┐              │
-│  │  🔑 Active API Keys     │  │  🔔 Notifications       │              │
+│  │  Active API Keys     │  │  Notifications       │              │
 │  │                         │  │                         │              │
-│  │   2 keys                │  │  ✓ ntfy                 │              │
-│  │   1 read, 1 write       │  │  ✓ Pushover             │              │
-│  │                         │  │  ○ Telegram             │              │
+│  │   2 keys                │  │  ntfy (enabled)                 │              │
+│  │   1 read, 1 write       │  │  Pushover (enabled)             │              │
+│  │                         │  │  Telegram (disabled)             │              │
 │  │  [Manage →]             │  │                         │              │
 │  └─────────────────────────┘  └─────────────────────────┘              │
 │                                                                         │
 │  Recent Activity                                                        │
 │  ─────────────────────────────────────────────────────────────────────  │
-│  │ 12:45 │ ✓ │ Create Event │ Team Standup    │ sk_write_a1b2... │    │
-│  │ 12:30 │ ✓ │ Create Event │ 1:1 with Alice  │ sk_write_a1b2... │    │
-│  │ 11:15 │ ✗ │ Delete Event │ Old Meeting     │ sk_write_a1b2... │    │
-│  │ 10:00 │ ✓ │ List Events  │ -               │ sk_read_x9y8...  │    │
+│  │ 12:45 │ OK │ Create Event │ Team Standup    │ sk_write_a1b2... │    │
+│  │ 12:30 │ OK │ Create Event │ 1:1 with Alice  │ sk_write_a1b2... │    │
+│  │ 11:15 │ FAIL │ Delete Event │ Old Meeting     │ sk_write_a1b2... │    │
+│  │ 10:00 │ OK │ List Events  │ -               │ sk_read_x9y8...  │    │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -2350,7 +2331,7 @@ wait_for_approval() {
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  Request: req_a1b2c3d4e5f6                                             │
-│  Status: ⏳ Pending Approval                                            │
+│  Status: Pending Approval                                            │
 │  Expires in: 47 minutes                                                 │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
@@ -2362,12 +2343,12 @@ wait_for_approval() {
 │  Event Details                                                          │
 │  ─────────────────────────────────────────────────────────────────────  │
 │                                                                         │
-│  📅  Title:       Project Review Meeting                               │
-│  🕐  Start:       January 30, 2026 at 10:00 AM                         │
-│  🕐  End:         January 30, 2026 at 11:00 AM                         │
-│  📍  Location:    Conference Room A                                    │
-│  👥  Attendees:   alice@example.com, bob@example.com                   │
-│  📝  Description: Quarterly project status review and planning         │
+│  Title:       Project Review Meeting                               │
+│  Start:       January 30, 2026 at 10:00 AM                         │
+│  End:         January 30, 2026 at 11:00 AM                         │
+│  Location:    Conference Room A                                    │
+│  Attendees:   alice@example.com, bob@example.com                   │
+│  Description: Quarterly project status review and planning         │
 │                                                                         │
 │  Raw Request                                                            │
 │  ─────────────────────────────────────────────────────────────────────  │
@@ -2391,7 +2372,7 @@ wait_for_approval() {
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │   ┌──────────────┐    ┌──────────────┐    ┌────────────────────┐      │
-│   │  ✅ Approve  │    │   ❌ Deny    │    │  ✏️ Suggest Change │      │
+│   │  Approve  │    │   Deny    │    │  Suggest Change │      │
 │   └──────────────┘    └──────────────┘    └────────────────────┘      │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -2408,7 +2389,7 @@ wait_for_approval() {
 │  will receive approval requests simultaneously.                         │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  ntfy                                           [✓] Enabled     │   │
+│  │  ntfy                                           [x] Enabled     │   │
 │  │  ───────────────────────────────────────────────────────────── │   │
 │  │  Server:   https://ntfy.sh        [________________]           │   │
 │  │  Topic:    ●●●●●●●●●●●●●●●●       [________________]           │   │
@@ -2419,7 +2400,7 @@ wait_for_approval() {
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Pushover                                       [✓] Enabled     │   │
+│  │  Pushover                                       [x] Enabled     │   │
 │  │  ───────────────────────────────────────────────────────────── │   │
 │  │  App Token: ●●●●●●●●●●●●●●●●     [________________]            │   │
 │  │  User Key:  ●●●●●●●●●●●●●●●●     [________________]            │   │
@@ -2469,39 +2450,40 @@ services:
     restart: unless-stopped
     environment:
       # === Required ===
-      - SECRET_KEY=${SECRET_KEY}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - SCHEDLOCK_SERVER_SECRET=${SCHEDLOCK_SERVER_SECRET}
+      - SCHEDLOCK_ENCRYPTION_KEY=${SCHEDLOCK_ENCRYPTION_KEY}
+      - SCHEDLOCK_GOOGLE_CLIENT_ID=${SCHEDLOCK_GOOGLE_CLIENT_ID}
+      - SCHEDLOCK_GOOGLE_CLIENT_SECRET=${SCHEDLOCK_GOOGLE_CLIENT_SECRET}
+      - SCHEDLOCK_AUTH_PASSWORD_HASH=${SCHEDLOCK_AUTH_PASSWORD_HASH}
+      - SCHEDLOCK_ADMIN_PASSWORD=${SCHEDLOCK_ADMIN_PASSWORD:-}
       
       # === Notifications (enable at least one) ===
       # ntfy
-      - NTFY_ENABLED=${NTFY_ENABLED:-true}
-      - NTFY_SERVER=${NTFY_SERVER:-https://ntfy.sh}
-      - NTFY_TOPIC=${NTFY_TOPIC}
-      - NTFY_TOKEN=${NTFY_TOKEN:-}
+      - SCHEDLOCK_NTFY_ENABLED=${SCHEDLOCK_NTFY_ENABLED:-true}
+      - SCHEDLOCK_NTFY_SERVER_URL=${SCHEDLOCK_NTFY_SERVER_URL:-https://ntfy.sh}
+      - SCHEDLOCK_NTFY_TOPIC=${SCHEDLOCK_NTFY_TOPIC}
+      - SCHEDLOCK_NTFY_TOKEN=${SCHEDLOCK_NTFY_TOKEN:-}
       
       # Pushover
-      - PUSHOVER_ENABLED=${PUSHOVER_ENABLED:-false}
-      - PUSHOVER_APP_TOKEN=${PUSHOVER_APP_TOKEN:-}
-      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY:-}
+      - SCHEDLOCK_PUSHOVER_ENABLED=${SCHEDLOCK_PUSHOVER_ENABLED:-false}
+      - SCHEDLOCK_PUSHOVER_APP_TOKEN=${SCHEDLOCK_PUSHOVER_APP_TOKEN:-}
+      - SCHEDLOCK_PUSHOVER_USER_KEY=${SCHEDLOCK_PUSHOVER_USER_KEY:-}
       
       # Telegram
-      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-false}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:-}
+      - SCHEDLOCK_TELEGRAM_ENABLED=${SCHEDLOCK_TELEGRAM_ENABLED:-false}
+      - SCHEDLOCK_TELEGRAM_BOT_TOKEN=${SCHEDLOCK_TELEGRAM_BOT_TOKEN:-}
+      - SCHEDLOCK_TELEGRAM_CHAT_ID=${SCHEDLOCK_TELEGRAM_CHAT_ID:-}
+      - SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET=${SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET:-}
       
       # Moltbot Webhook (push status updates to bot)
-      - MOLTBOT_WEBHOOK_ENABLED=${MOLTBOT_WEBHOOK_ENABLED:-false}
-      - MOLTBOT_WEBHOOK_URL=${MOLTBOT_WEBHOOK_URL:-}
-      - MOLTBOT_WEBHOOK_TOKEN=${MOLTBOT_WEBHOOK_TOKEN:-}
+      - SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED=${SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED:-false}
+      - SCHEDLOCK_MOLTBOT_WEBHOOK_URL=${SCHEDLOCK_MOLTBOT_WEBHOOK_URL:-}
+      - SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET=${SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET:-}
       
       # === Optional ===
-      - BASE_URL=${BASE_URL:-http://localhost:8080}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - DISPLAY_TIMEZONE=${DISPLAY_TIMEZONE:-America/New_York}
+      - SCHEDLOCK_BASE_URL=${SCHEDLOCK_BASE_URL:-http://localhost:8080}
+      - SCHEDLOCK_LOG_LEVEL=${SCHEDLOCK_LOG_LEVEL:-info}
+      - SCHEDLOCK_DISPLAY_TIMEZONE=${SCHEDLOCK_DISPLAY_TIMEZONE:-America/New_York}
       
     volumes:
       - calendar-proxy-data:/data
@@ -2559,52 +2541,54 @@ networks:
 ```bash
 # === Required Secrets ===
 # Generate with: openssl rand -base64 32
-SECRET_KEY=
-ENCRYPTION_KEY=
+SCHEDLOCK_SERVER_SECRET=
+SCHEDLOCK_ENCRYPTION_KEY=
 
 # Google OAuth credentials (from Google Cloud Console)
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
+SCHEDLOCK_GOOGLE_CLIENT_ID=
+SCHEDLOCK_GOOGLE_CLIENT_SECRET=
 
-# Web UI admin password
-ADMIN_PASSWORD=
+# Web UI admin password (Argon2id hash)
+SCHEDLOCK_AUTH_PASSWORD_HASH=
+# Optional dev-only plaintext (not recommended)
+SCHEDLOCK_ADMIN_PASSWORD=
 
 # === Notification Providers ===
 # Enable at least one!
 
 # ntfy (recommended for self-hosted)
-NTFY_ENABLED=true
-NTFY_SERVER=https://ntfy.sh
-NTFY_TOPIC=your-secret-topic-change-this
-NTFY_TOKEN=
+SCHEDLOCK_NTFY_ENABLED=true
+SCHEDLOCK_NTFY_SERVER_URL=https://ntfy.sh
+SCHEDLOCK_NTFY_TOPIC=your-secret-topic-change-this
+SCHEDLOCK_NTFY_TOKEN=
 
 # Pushover
-PUSHOVER_ENABLED=false
-PUSHOVER_APP_TOKEN=
-PUSHOVER_USER_KEY=
+SCHEDLOCK_PUSHOVER_ENABLED=false
+SCHEDLOCK_PUSHOVER_APP_TOKEN=
+SCHEDLOCK_PUSHOVER_USER_KEY=
 
 # Telegram
-TELEGRAM_ENABLED=false
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-TELEGRAM_WEBHOOK_SECRET=
+SCHEDLOCK_TELEGRAM_ENABLED=false
+SCHEDLOCK_TELEGRAM_BOT_TOKEN=
+SCHEDLOCK_TELEGRAM_CHAT_ID=
+SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET=
 
 # === Deployment ===
 # Public URL (for callback URLs in notifications)
-BASE_URL=https://calendar.example.com
+SCHEDLOCK_BASE_URL=https://calendar.example.com
 
 # Logging: debug, info, warn, error
-LOG_LEVEL=info
+SCHEDLOCK_LOG_LEVEL=info
 
 # Timezone for Web UI and notifications (IANA format)
 # API always uses UTC, this is for human-readable display
-DISPLAY_TIMEZONE=America/New_York
+SCHEDLOCK_DISPLAY_TIMEZONE=America/New_York
 
 # === Moltbot Webhook (Optional but Recommended) ===
 # Push status updates to Moltbot instead of requiring polling
-MOLTBOT_WEBHOOK_ENABLED=true
-MOLTBOT_WEBHOOK_URL=http://localhost:18789/hooks/agent
-MOLTBOT_WEBHOOK_TOKEN=your-moltbot-hooks-token
+SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED=true
+SCHEDLOCK_MOLTBOT_WEBHOOK_URL=http://localhost:18789/hooks/agent
+SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET=your-moltbot-hooks-token
 
 # === Optional: Cloudflare Tunnel ===
 CF_TUNNEL_TOKEN=
@@ -2695,13 +2679,13 @@ dbs:
 1. **Create `.env` file** from template
 2. **Generate secrets**:
    ```bash
-   echo "SECRET_KEY=$(openssl rand -base64 32)" >> .env
-   echo "ENCRYPTION_KEY=$(openssl rand -base64 32)" >> .env
+   echo "SCHEDLOCK_SERVER_SECRET=$(openssl rand -base64 32)" >> .env
+   echo "SCHEDLOCK_ENCRYPTION_KEY=$(openssl rand -base64 32)" >> .env
    ```
 3. **Set up Google OAuth**:
    - Go to Google Cloud Console
    - Create OAuth 2.0 credentials
-   - Set redirect URI: `{BASE_URL}/oauth/callback`
+   - Set redirect URI: `{SCHEDLOCK_BASE_URL}/oauth/callback`
    - Add to `.env`
 4. **Configure at least one notification provider**
 5. **Start the service**:
@@ -2709,7 +2693,7 @@ dbs:
    docker compose up -d
    ```
 6. **Access web UI**: `http://localhost:8080`
-7. **Log in** with `ADMIN_PASSWORD`
+7. **Log in** with the password that matches `SCHEDLOCK_AUTH_PASSWORD_HASH` (or `SCHEDLOCK_ADMIN_PASSWORD` in dev)
 8. **Connect Google Calendar** via Settings > Google
 9. **Test notifications** via Settings > Notifications
 10. **Create API key** via API Keys page
@@ -2721,20 +2705,21 @@ dbs:
 
 ### 12.1 Configuration Hierarchy
 
+Current implementation uses **environment variables and built-in defaults only**.
+YAML config files and database-stored settings are planned but not implemented yet.
+
 1. **Environment variables** — Highest priority, required for secrets
-2. **Config file** (`/data/config.yaml`) — Optional, for complex settings
-3. **Database settings** — Runtime-changeable via Web UI
-4. **Defaults** — Built-in fallbacks
+2. **Defaults** — Built-in fallbacks
 
 ### 12.2 Full Configuration Reference
 
 ```yaml
-# /data/config.yaml (optional)
+# Planned format for /data/config.yaml (not implemented in current build)
 
 server:
   host: "0.0.0.0"
   port: 8080
-  base_url: "${BASE_URL}"             # Used for callback URLs
+  SCHEDLOCK_BASE_URL: "${SCHEDLOCK_BASE_URL}"             # Used for callback URLs
   read_timeout: 30s
   write_timeout: 30s
 
@@ -2759,11 +2744,11 @@ retention:
   webhook_failures_days: 30           # Delete resolved webhook failures older than this
 
 google:
-  client_id: "${GOOGLE_CLIENT_ID}"
-  client_secret: "${GOOGLE_CLIENT_SECRET}"
+  client_id: "${SCHEDLOCK_GOOGLE_CLIENT_ID}"
+  client_secret: "${SCHEDLOCK_GOOGLE_CLIENT_SECRET}"
   scopes:
     - "https://www.googleapis.com/auth/calendar.events"  # Events only (minimal scope)
-  redirect_uri: "${BASE_URL}/oauth/callback"
+  redirect_uri: "${SCHEDLOCK_BASE_URL}/oauth/callback"
 
 approval:
   timeout_minutes: 60
@@ -2801,33 +2786,33 @@ retry:
 
 notifications:
   ntfy:
-    enabled: "${NTFY_ENABLED}"
-    server: "${NTFY_SERVER}"
-    topic: "${NTFY_TOPIC}"
-    token: "${NTFY_TOKEN}"
+    enabled: "${SCHEDLOCK_NTFY_ENABLED}"
+    server: "${SCHEDLOCK_NTFY_SERVER_URL}"
+    topic: "${SCHEDLOCK_NTFY_TOPIC}"
+    token: "${SCHEDLOCK_NTFY_TOKEN}"
     priority: "high"
     
   pushover:
-    enabled: "${PUSHOVER_ENABLED}"
-    app_token: "${PUSHOVER_APP_TOKEN}"
-    user_key: "${PUSHOVER_USER_KEY}"
+    enabled: "${SCHEDLOCK_PUSHOVER_ENABLED}"
+    app_token: "${SCHEDLOCK_PUSHOVER_APP_TOKEN}"
+    user_key: "${SCHEDLOCK_PUSHOVER_USER_KEY}"
     priority: 1
     sound: "pushover"
     
   telegram:
-    enabled: "${TELEGRAM_ENABLED}"
-    bot_token: "${TELEGRAM_BOT_TOKEN}"
-    chat_id: "${TELEGRAM_CHAT_ID}"
-    webhook_secret: "${TELEGRAM_WEBHOOK_SECRET}"
+    enabled: "${SCHEDLOCK_TELEGRAM_ENABLED}"
+    bot_token: "${SCHEDLOCK_TELEGRAM_BOT_TOKEN}"
+    chat_id: "${SCHEDLOCK_TELEGRAM_CHAT_ID}"
+    webhook_secret: "${SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET}"
     webhook_path: "/webhooks/telegram"
     auto_register_webhook: true          # Auto-register on startup
 
 # Moltbot webhook for pushing status updates
 moltbot:
   webhook:
-    enabled: "${MOLTBOT_WEBHOOK_ENABLED}"
-    url: "${MOLTBOT_WEBHOOK_URL}"        # e.g., http://localhost:18789/hooks/agent
-    token: "${MOLTBOT_WEBHOOK_TOKEN}"    # hooks.token from Moltbot config
+    enabled: "${SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED}"
+    url: "${SCHEDLOCK_MOLTBOT_WEBHOOK_URL}"        # e.g., http://localhost:18789/hooks/agent
+    token: "${SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET}"   # hooks.token from Moltbot config
     session_key_prefix: "calendar-proxy"
     notify_on:                            # Which status changes trigger webhooks
       - approved
@@ -2838,7 +2823,8 @@ moltbot:
       - failed
 
 auth:
-  admin_password: "${ADMIN_PASSWORD}"  # Hashed on first use
+  admin_password_hash: "${SCHEDLOCK_AUTH_PASSWORD_HASH}"
+  admin_password: "${SCHEDLOCK_ADMIN_PASSWORD}"
   session_duration: 24h
   session_refresh: true
   
@@ -2848,14 +2834,14 @@ auth:
     aud: "${CF_ACCESS_AUD}"
 
 logging:
-  level: "${LOG_LEVEL}"               # debug, info, warn, error
+  level: "${SCHEDLOCK_LOG_LEVEL}"               # debug, info, warn, error
   format: "json"                      # json or text
   include_caller: false
 ```
 
 ### 12.3 Runtime-Changeable Settings
 
-These can be modified via Web UI without restart:
+Planned for a future release. The current build does not persist runtime settings via the Web UI.
 
 | Setting | Location | Description |
 |---------|----------|-------------|
@@ -2875,10 +2861,10 @@ These can be modified via Web UI without restart:
 | Threat | Impact | Mitigation |
 |--------|--------|------------|
 | API key theft | Attacker can read/write calendar | Hashed storage, rate limiting, revocation |
-| Notification spoofing | Fake approval/denial | HMAC-signed callback URLs |
+| Notification spoofing | Fake approval/denial | Single-use decision tokens |
 | OAuth token theft | Full calendar access | Encrypted at rest (AES-256-GCM) |
 | Session hijacking | Web UI access | HTTP-only secure cookies, CSRF protection |
-| Brute force login | Web UI access | Rate limiting, account lockout |
+| Brute force login | Web UI access | Rate limiting on login endpoint |
 | MITM attacks | Data interception | TLS required (via tunnel/proxy) |
 | SQL injection | Database compromise | Parameterized queries only |
 | XSS attacks | Session theft | CSP headers, output encoding |
@@ -2887,21 +2873,21 @@ These can be modified via Web UI without restart:
 
 **Secrets Management**:
 - [ ] All secrets in environment variables, never in code
-- [ ] `SECRET_KEY` and `ENCRYPTION_KEY` are unique, randomly generated
+- [ ] `SCHEDLOCK_SERVER_SECRET` and `SCHEDLOCK_ENCRYPTION_KEY` are unique, randomly generated
 - [ ] `.env` file excluded from version control
 - [ ] Secrets rotated periodically
 
 **Data Protection**:
 - [ ] OAuth tokens encrypted with AES-256-GCM
-- [ ] API keys stored as SHA-256 hashes
+- [ ] API keys stored as HMAC-SHA256 hashes
 - [ ] Database file permissions restricted (600)
 - [ ] Backup encryption enabled (if using Litestream)
 
 **Network Security**:
 - [ ] HTTPS required in production (via Cloudflare Tunnel or reverse proxy)
 - [ ] No direct port exposure (bind to localhost only)
-- [ ] Cloudflare Access enabled for web UI (recommended)
-- [ ] CORS restricted to known origins
+- [ ] Cloudflare Access enabled at proxy/tunnel (optional)
+- [ ] Same-origin web UI (no CORS headers)
 
 **Authentication**:
 - [ ] Password hashed with Argon2id
@@ -2910,8 +2896,8 @@ These can be modified via Web UI without restart:
 - [ ] Rate limiting on login endpoint
 
 **Callback Security**:
-- [ ] HMAC signatures on all callback URLs
-- [ ] Timestamp validation (5-minute window)
+- [ ] Single-use decision tokens on callback URLs
+- [ ] Token expiration enforced
 - [ ] Request status checked before processing
 - [ ] Telegram webhook secret validated
 
@@ -2969,7 +2955,7 @@ These can be modified via Web UI without restart:
    - Scopes: `calendar`, `calendar.events`
 5. Create **OAuth 2.0 Client ID**:
    - Application type: Web application
-   - Authorized redirect URI: `{BASE_URL}/oauth/callback`
+   - Authorized redirect URI: `{SCHEDLOCK_BASE_URL}/oauth/callback`
 6. Copy Client ID and Client Secret to `.env`
 
 ---
@@ -2980,14 +2966,14 @@ Customizable via settings. Defaults:
 
 **ntfy**:
 ```
-Title: 📅 Calendar: {operation_title}
+Title: Calendar: {operation_title}
 Body:
 Moltbot wants to {operation_verb}:
 
-📅 {event_title}
-🕐 {event_start} - {event_end}
-📍 {event_location}
-👥 {event_attendees}
+Title: {event_title}
+When: {event_start} - {event_end}
+Location: {event_location}
+Attendees: {event_attendees}
 
 Request: {request_id}
 Expires: {expires_in}
@@ -2995,19 +2981,19 @@ Expires: {expires_in}
 
 **Pushover**:
 ```
-Title: 📅 Calendar: {operation_title}
+Title: Calendar: {operation_title}
 Message: Moltbot wants to {operation_verb}: {event_title} on {event_date}. Tap to review and approve.
 ```
 
 **Telegram**:
 ```
-🗓 *Calendar Request*
+*Calendar Request*
 
 Moltbot wants to {operation_verb}:
 
 *{event_title}*
-🕐 {event_start} - {event_end}
-📍 {event_location}
+When: {event_start} - {event_end}
+Location: {event_location}
 
 Request: `{request_id}`
 Expires: {expires_in}
@@ -3030,3 +3016,4 @@ Expires: {expires_in}
 ---
 
 *End of Design Document*
+

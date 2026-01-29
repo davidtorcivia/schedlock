@@ -10,6 +10,7 @@ import (
 
 	"github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
+	"github.com/dtorcivia/schedlock/internal/util"
 )
 
 // Repository handles decision token storage and validation.
@@ -35,7 +36,7 @@ func (r *Repository) Create(ctx context.Context, requestID string, expiresAt tim
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO decision_tokens (token_hash, request_id, allowed_actions, expires_at)
 		VALUES (?, ?, ?, ?)
-	`, hash, requestID, string(allowedActions), expiresAt.Format(time.RFC3339))
+	`, hash, requestID, string(allowedActions), util.SQLiteTimestamp(expiresAt))
 
 	if err != nil {
 		return "", fmt.Errorf("failed to store token: %w", err)
@@ -87,7 +88,7 @@ func (r *Repository) Validate(ctx context.Context, token string) (*ValidateResul
 	}
 
 	// Check if expired
-	expires, _ := time.Parse(time.RFC3339, expiresAt)
+	expires, _ := util.ParseSQLiteTimestamp(expiresAt)
 	if time.Now().After(expires) {
 		return &ValidateResult{
 			RequestID: requestID,
@@ -184,11 +185,11 @@ func (r *Repository) GetByRequestID(ctx context.Context, requestID string) ([]da
 		}
 
 		json.Unmarshal([]byte(allowedJSON), &tok.AllowedActions)
-		tok.ExpiresAt, _ = time.Parse(time.RFC3339, expiresAt)
-		tok.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		tok.ExpiresAt, _ = util.ParseSQLiteTimestamp(expiresAt)
+		tok.CreatedAt, _ = util.ParseSQLiteTimestamp(createdAt)
 
 		if consumedAt.Valid {
-			t, _ := time.Parse("2006-01-02 15:04:05", consumedAt.String)
+			t, _ := util.ParseSQLiteTimestamp(consumedAt.String)
 			tok.ConsumedAt = sql.NullTime{Time: t, Valid: true}
 		}
 

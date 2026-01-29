@@ -46,7 +46,7 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
   -H "Idempotency-Key: unique-request-id" \
   "$SCHEDLOCK_API_URL/api/calendar/events/create" \
   -d '{
-    "calendar_id": "primary",
+    "calendarId": "primary",
     "summary": "Meeting Title",
     "start": "2024-01-15T10:00:00-05:00",
     "end": "2024-01-15T11:00:00-05:00",
@@ -62,8 +62,8 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
   -H "Content-Type: application/json" \
   "$SCHEDLOCK_API_URL/api/calendar/events/update" \
   -d '{
-    "calendar_id": "primary",
-    "event_id": "existing-event-id",
+    "calendarId": "primary",
+    "eventId": "existing-event-id",
     "summary": "Updated Title",
     "start": "2024-01-15T14:00:00-05:00",
     "end": "2024-01-15T15:00:00-05:00"
@@ -76,8 +76,8 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
   -H "Content-Type: application/json" \
   "$SCHEDLOCK_API_URL/api/calendar/events/delete" \
   -d '{
-    "calendar_id": "primary",
-    "event_id": "event-to-delete"
+    "calendarId": "primary",
+    "eventId": "event-to-delete"
   }'
 ```
 

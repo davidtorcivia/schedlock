@@ -43,8 +43,8 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		// Content Security Policy
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-			"script-src 'self' 'unsafe-inline'; "+ // Needed for HTMX inline handlers
-			"style-src 'self' 'unsafe-inline'; "+  // Needed for Tailwind
+			"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "+ // Tailwind CDN + HTMX
+			"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "+  // Tailwind CDN
 			"img-src 'self' data:; "+
 			"connect-src 'self'; "+
 			"frame-ancestors 'none'")

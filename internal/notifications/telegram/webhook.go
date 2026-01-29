@@ -74,6 +74,15 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate Telegram secret token if configured
+	if h.provider.config.WebhookSecret != "" {
+		secret := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+		if secret != h.provider.config.WebhookSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		util.Error("Failed to read webhook body", "error", err)
@@ -121,6 +130,17 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, query *Callbac
 
 	action := parts[0]
 	requestID := parts[1]
+
+	if query.Message == nil || query.Message.Chat == nil {
+		util.Warn("Missing chat info in callback query", "request_id", requestID)
+		return
+	}
+
+	// Enforce allowed chat ID
+	if !h.isAllowedChat(query.Message.Chat.ID) {
+		util.Warn("Unauthorized chat for callback", "chat_id", query.Message.Chat.ID)
+		return
+	}
 
 	// Handle test button
 	if action == "test" {
@@ -190,6 +210,11 @@ func (h *WebhookHandler) handleReply(ctx context.Context, msg *Message) {
 	// Find the original notification by message ID
 	originalMsgID := fmt.Sprintf("%d", msg.ReplyToMessage.MessageID)
 
+	if msg.Chat == nil || !h.isAllowedChat(msg.Chat.ID) {
+		util.Warn("Unauthorized chat for suggestion", "chat_id", msg.Chat.ID)
+		return
+	}
+
 	notifLog, err := h.notificationMgr.FindByMessageID(ctx, "telegram", originalMsgID)
 	if err != nil || notifLog == nil {
 		util.Warn("Could not find notification for reply", "message_id", originalMsgID)
@@ -227,12 +252,19 @@ func (h *WebhookHandler) handleReply(ctx context.Context, msg *Message) {
 	h.provider.RemoveKeyboard(ctx, msg.ReplyToMessage.MessageID, "change_requested")
 
 	// Send confirmation
-	h.sendReply(ctx, msg.Chat.ID, msg.MessageID, "📝 Suggestion recorded. The request has been updated.")
+	h.sendReply(ctx, msg.Chat.ID, msg.MessageID, "Suggestion recorded. The request has been updated.")
 
 	util.Info("Processed Telegram suggestion",
 		"request_id", notifLog.RequestID,
 		"responded_by", respondedBy,
 	)
+}
+
+func (h *WebhookHandler) isAllowedChat(chatID int64) bool {
+	if h.provider == nil || h.provider.config == nil || h.provider.config.ChatID == "" {
+		return false
+	}
+	return fmt.Sprintf("%d", chatID) == h.provider.config.ChatID
 }
 
 // answerCallbackQuery acknowledges a callback query.

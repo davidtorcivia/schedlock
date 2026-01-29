@@ -10,6 +10,7 @@ import (
 
 	"github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
+	"github.com/dtorcivia/schedlock/internal/util"
 )
 
 // Repository handles request storage and retrieval.
@@ -40,7 +41,7 @@ func (r *Repository) Create(ctx context.Context, req *CreateRequest) (*database.
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO requests (id, api_key_id, operation, status, payload, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, id, req.APIKeyID, req.Operation, database.StatusPendingApproval, string(req.Payload), req.ExpiresAt.Format(time.RFC3339))
+	`, id, req.APIKeyID, req.Operation, database.StatusPendingApproval, string(req.Payload), util.SQLiteTimestamp(req.ExpiresAt))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert request: %w", err)
@@ -205,13 +206,22 @@ func (r *Repository) SetError(ctx context.Context, id, errorMsg string) error {
 
 // SetExecuting marks a request as currently executing.
 func (r *Repository) SetExecuting(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `
+	result, err := r.db.ExecContext(ctx, `
 		UPDATE requests
 		SET status = ?
 		WHERE id = ? AND status = ?
 	`, database.StatusExecuting, id, database.StatusApproved)
 
-	return err
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("request not approved or already executing")
+	}
+
+	return nil
 }
 
 // IncrementRetryCount increments the retry counter.
@@ -240,7 +250,7 @@ func (r *Repository) SetWebhookNotified(ctx context.Context, id string) error {
 func (r *Repository) Cancel(ctx context.Context, id, apiKeyID string) error {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE requests
-		SET status = ?
+		SET status = ?, decided_at = datetime('now'), decided_by = 'api'
 		WHERE id = ? AND api_key_id = ? AND status = ?
 	`, database.StatusCancelled, id, apiKeyID, database.StatusPendingApproval)
 

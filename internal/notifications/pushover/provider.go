@@ -45,7 +45,7 @@ func (p *Provider) Enabled() bool {
 
 // SendApproval sends an approval request notification.
 func (p *Provider) SendApproval(ctx context.Context, notification *notifications.ApprovalNotification) (string, error) {
-	title := fmt.Sprintf("📅 %s", notification.Summary)
+	title := fmt.Sprintf("Calendar: %s", notification.Summary)
 
 	var body strings.Builder
 	body.WriteString(fmt.Sprintf("<b>Operation:</b> %s\n", notification.Operation))
@@ -66,9 +66,13 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 	}
 
 	body.WriteString(fmt.Sprintf("\n<b>Expires:</b> %s\n\n", notification.ExpiresIn))
-	body.WriteString(fmt.Sprintf("<a href=\"%s\">✅ Approve</a> | ", notification.ApproveURL))
-	body.WriteString(fmt.Sprintf("<a href=\"%s\">❌ Deny</a> | ", notification.DenyURL))
-	body.WriteString(fmt.Sprintf("<a href=\"%s\">📝 Review</a>", notification.WebURL))
+	if notification.ApproveURL != "" && notification.DenyURL != "" {
+		body.WriteString(fmt.Sprintf("<a href=\"%s\">Approve</a> | ", notification.ApproveURL))
+		body.WriteString(fmt.Sprintf("<a href=\"%s\">Deny</a> | ", notification.DenyURL))
+	}
+	if notification.WebURL != "" {
+		body.WriteString(fmt.Sprintf("<a href=\"%s\">Review</a>", notification.WebURL))
+	}
 
 	params := url.Values{
 		"token":     {p.config.AppToken},
@@ -91,16 +95,16 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 
 	switch notification.Status {
 	case "completed":
-		title = fmt.Sprintf("✅ %s Completed", notification.Operation)
+		title = fmt.Sprintf("%s Completed", notification.Operation)
 	case "failed":
-		title = fmt.Sprintf("❌ %s Failed", notification.Operation)
+		title = fmt.Sprintf("%s Failed", notification.Operation)
 		priority = "1" // High priority for failures
 	case "denied":
-		title = fmt.Sprintf("🚫 %s Denied", notification.Operation)
+		title = fmt.Sprintf("%s Denied", notification.Operation)
 	case "expired":
-		title = fmt.Sprintf("⏰ %s Expired", notification.Operation)
+		title = fmt.Sprintf("%s Expired", notification.Operation)
 	default:
-		title = fmt.Sprintf("📅 %s: %s", notification.Operation, notification.Status)
+		title = fmt.Sprintf("%s: %s", notification.Operation, notification.Status)
 	}
 
 	params := url.Values{
@@ -125,8 +129,8 @@ func (p *Provider) SendTest(ctx context.Context) error {
 	params := url.Values{
 		"token":    {p.config.AppToken},
 		"user":     {p.config.UserKey},
-		"title":    {"🧪 SchedLock Test"},
-		"message":  {"This is a test notification from SchedLock. If you can see this, Pushover is configured correctly!"},
+		"title":    {"SchedLock Test"},
+		"message":  {"This is a test notification from SchedLock. If you can see this, Pushover is configured correctly."},
 		"priority": {"0"},
 	}
 

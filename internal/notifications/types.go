@@ -59,8 +59,10 @@ type NotificationLog struct {
 	ID           int64
 	RequestID    string
 	Provider     string
+	Status       string
 	MessageID    string
 	SentAt       time.Time
-	DeliveredAt  *time.Time
+	CallbackAt   *time.Time
 	ErrorMessage string
+	Response     json.RawMessage
 }

@@ -62,23 +62,28 @@ type ntfyAction struct {
 
 // SendApproval sends an approval request notification.
 func (p *Provider) SendApproval(ctx context.Context, notification *notifications.ApprovalNotification) (string, error) {
-	title := fmt.Sprintf("📅 %s", notification.Summary)
+	title := fmt.Sprintf("Calendar: %s", notification.Summary)
 
 	var body strings.Builder
-	body.WriteString(fmt.Sprintf("Operation: %s\n", notification.Operation))
+	if p.config.MinimalContent {
+		body.WriteString("A calendar request is awaiting approval.\n\n")
+		body.WriteString("Review details in the web UI.\n")
+	} else {
+		body.WriteString(fmt.Sprintf("Operation: %s\n", notification.Operation))
 
-	if notification.Details != nil {
-		if notification.Details.Title != "" {
-			body.WriteString(fmt.Sprintf("Event: %s\n", notification.Details.Title))
-		}
-		if !notification.Details.StartTime.IsZero() {
-			body.WriteString(fmt.Sprintf("When: %s\n", notification.Details.StartTime.Format("Mon Jan 2, 3:04 PM")))
-		}
-		if notification.Details.Location != "" {
-			body.WriteString(fmt.Sprintf("Where: %s\n", notification.Details.Location))
-		}
-		if len(notification.Details.Attendees) > 0 {
-			body.WriteString(fmt.Sprintf("Attendees: %s\n", strings.Join(notification.Details.Attendees, ", ")))
+		if notification.Details != nil {
+			if notification.Details.Title != "" {
+				body.WriteString(fmt.Sprintf("Event: %s\n", notification.Details.Title))
+			}
+			if !notification.Details.StartTime.IsZero() {
+				body.WriteString(fmt.Sprintf("When: %s\n", notification.Details.StartTime.Format("Mon Jan 2, 3:04 PM")))
+			}
+			if notification.Details.Location != "" {
+				body.WriteString(fmt.Sprintf("Where: %s\n", notification.Details.Location))
+			}
+			if len(notification.Details.Attendees) > 0 {
+				body.WriteString(fmt.Sprintf("Attendees: %s\n", strings.Join(notification.Details.Attendees, ", ")))
+			}
 		}
 	}
 
@@ -88,30 +93,35 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 		Topic:    p.config.Topic,
 		Title:    title,
 		Message:  body.String(),
-		Priority: 4, // High priority
+		Priority: mapPriority(p.config.Priority),
 		Tags:     []string{"calendar", "approval"},
 		Click:    notification.WebURL,
-		Actions: []ntfyAction{
+	}
+
+	if notification.ApproveURL != "" && notification.DenyURL != "" {
+		msg.Actions = []ntfyAction{
 			{
 				Action: "http",
-				Label:  "✅ Approve",
+				Label:  "Approve",
 				URL:    notification.ApproveURL,
 				Method: "POST",
 				Clear:  true,
 			},
 			{
 				Action: "http",
-				Label:  "❌ Deny",
+				Label:  "Deny",
 				URL:    notification.DenyURL,
 				Method: "POST",
 				Clear:  true,
 			},
-			{
-				Action: "view",
-				Label:  "📝 Review",
-				URL:    notification.WebURL,
-			},
-		},
+		}
+	}
+	if notification.WebURL != "" {
+		msg.Actions = append(msg.Actions, ntfyAction{
+			Action: "view",
+			Label:  "Review",
+			URL:    notification.WebURL,
+		})
 	}
 
 	return p.send(ctx, &msg)
@@ -125,20 +135,20 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 
 	switch notification.Status {
 	case "completed":
-		title = fmt.Sprintf("✅ %s Completed", notification.Operation)
+		title = fmt.Sprintf("%s Completed", notification.Operation)
 		tags = []string{"white_check_mark", "calendar"}
 	case "failed":
-		title = fmt.Sprintf("❌ %s Failed", notification.Operation)
+		title = fmt.Sprintf("%s Failed", notification.Operation)
 		tags = []string{"x", "calendar"}
 		priority = 4
 	case "denied":
-		title = fmt.Sprintf("🚫 %s Denied", notification.Operation)
+		title = fmt.Sprintf("%s Denied", notification.Operation)
 		tags = []string{"no_entry", "calendar"}
 	case "expired":
-		title = fmt.Sprintf("⏰ %s Expired", notification.Operation)
+		title = fmt.Sprintf("%s Expired", notification.Operation)
 		tags = []string{"alarm_clock", "calendar"}
 	default:
-		title = fmt.Sprintf("📅 %s: %s", notification.Operation, notification.Status)
+		title = fmt.Sprintf("%s: %s", notification.Operation, notification.Status)
 		tags = []string{"calendar"}
 	}
 
@@ -162,14 +172,29 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 func (p *Provider) SendTest(ctx context.Context) error {
 	msg := ntfyMessage{
 		Topic:    p.config.Topic,
-		Title:    "🧪 SchedLock Test",
-		Message:  "This is a test notification from SchedLock. If you can see this, ntfy is configured correctly!",
+		Title:    "SchedLock Test",
+		Message:  "This is a test notification from SchedLock. If you can see this, ntfy is configured correctly.",
 		Priority: 3,
 		Tags:     []string{"test_tube", "calendar"},
 	}
 
 	_, err := p.send(ctx, &msg)
 	return err
+}
+
+func mapPriority(value string) int {
+	switch strings.ToLower(value) {
+	case "urgent":
+		return 5
+	case "high":
+		return 4
+	case "low":
+		return 2
+	case "min":
+		return 1
+	default:
+		return 3
+	}
 }
 
 // send sends a message to ntfy and returns the message ID.

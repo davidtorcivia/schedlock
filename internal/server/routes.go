@@ -24,7 +24,7 @@ func (s *Server) setupRoutes() {
 
 	// Telegram webhook (special auth via bot token in URL)
 	if s.telegramHandler != nil {
-		s.router.Handle("POST /webhook/telegram", s.telegramHandler)
+		s.router.Handle("POST "+s.config.Notifications.Telegram.WebhookPath, s.telegramHandler)
 	}
 
 	// Web UI routes

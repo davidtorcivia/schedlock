@@ -94,7 +94,7 @@ func SessionAuth(db *database.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Get session cookie
-			cookie, err := r.Cookie("session_id")
+			cookie, err := r.Cookie("schedlock_session")
 			if err != nil || cookie.Value == "" {
 				// Redirect to login for web pages
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -120,7 +120,7 @@ func SessionAuth(db *database.DB) func(http.Handler) http.Handler {
 			if err != nil {
 				// Invalid or expired session, redirect to login
 				http.SetCookie(w, &http.Cookie{
-					Name:     "session_id",
+					Name:     "schedlock_session",
 					Value:    "",
 					Path:     "/",
 					MaxAge:   -1,

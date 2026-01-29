@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,9 @@ func setupTestDB(t *testing.T) *database.DB {
 
 	db, err := database.Open(":memory:")
 	if err != nil {
+		if strings.Contains(err.Error(), "requires cgo") {
+			t.Skip("SQLite driver requires cgo; set CGO_ENABLED=1 with a working C compiler")
+		}
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
