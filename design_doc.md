@@ -2848,9 +2848,11 @@ These can be modified via Web UI without restart:
 |---------|----------|-------------|
 | Approval timeout | Settings > Runtime Settings | Minutes to wait |
 | Default action | Settings > Runtime Settings | Approve/deny on timeout |
+| Retention enabled | Settings > Runtime Settings | Toggle cleanup job |
 | Retention windows | Settings > Runtime Settings | Requests/audit/webhook days |
 | Log level/format | Settings > Runtime Settings | Logging behavior |
 | Display timezone | Settings > Runtime Settings | UI formatting |
+| Display formats | Settings > Runtime Settings | Date/time layout strings |
 
 ---
 

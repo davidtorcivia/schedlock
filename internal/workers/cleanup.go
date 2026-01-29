@@ -30,6 +30,7 @@ func NewCleanupWorker(db *database.DB, cfg *config.RetentionConfig) *CleanupWork
 func (w *CleanupWorker) Start(ctx context.Context) {
 	util.Info("Starting cleanup worker",
 		"interval", w.interval,
+		"enabled", w.config.Enabled,
 		"request_days", w.config.CompletedRequestsDays,
 		"audit_days", w.config.AuditLogDays,
 		"webhook_days", w.config.WebhookFailuresDays,
@@ -54,6 +55,11 @@ func (w *CleanupWorker) Start(ctx context.Context) {
 
 // runCleanup performs all cleanup tasks.
 func (w *CleanupWorker) runCleanup(ctx context.Context) {
+	if w.config != nil && !w.config.Enabled {
+		util.Debug("Retention cleanup disabled")
+		return
+	}
+
 	util.Debug("Running cleanup tasks")
 
 	// Clean up old requests

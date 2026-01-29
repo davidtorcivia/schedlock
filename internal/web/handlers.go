@@ -500,6 +500,7 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		h.renderSettingsError(w, r, err.Error())
 		return
 	}
+	retentionEnabled := r.FormValue("retention_enabled") == "on"
 
 	defaultAction := strings.TrimSpace(r.FormValue("approval_default_action"))
 	if defaultAction == "" {
@@ -517,6 +518,18 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	if displayTimezone == "" {
 		displayTimezone = h.config.Display.Timezone
 	}
+	displayDateFormat := strings.TrimSpace(r.FormValue("display_date_format"))
+	if displayDateFormat == "" {
+		displayDateFormat = h.config.Display.DateFormat
+	}
+	displayTimeFormat := strings.TrimSpace(r.FormValue("display_time_format"))
+	if displayTimeFormat == "" {
+		displayTimeFormat = h.config.Display.TimeFormat
+	}
+	displayDatetimeFormat := strings.TrimSpace(r.FormValue("display_datetime_format"))
+	if displayDatetimeFormat == "" {
+		displayDatetimeFormat = h.config.Display.DatetimeFormat
+	}
 
 	settingsPayload := &settings.RuntimeSettings{
 		Approval: &settings.ApprovalSettings{
@@ -524,6 +537,7 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 			DefaultAction:  defaultAction,
 		},
 		Retention: &settings.RetentionSettings{
+			Enabled:               &retentionEnabled,
 			CompletedRequestsDays: retentionRequests,
 			AuditLogDays:          retentionAudit,
 			WebhookFailuresDays:   retentionWebhook,
@@ -533,7 +547,10 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 			Format: logFormat,
 		},
 		Display: &settings.DisplaySettings{
-			Timezone: displayTimezone,
+			Timezone:       displayTimezone,
+			DateFormat:     displayDateFormat,
+			TimeFormat:     displayTimeFormat,
+			DatetimeFormat: displayDatetimeFormat,
 		},
 	}
 
@@ -567,12 +584,16 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		h.auditLogger.Log(ctx, database.AuditSettingsChanged, "", "", "web:admin", map[string]interface{}{
 			"approval_timeout_minutes": approvalTimeout,
 			"approval_default_action":  defaultAction,
+			"retention_enabled":        retentionEnabled,
 			"retention_completed_days": retentionRequests,
 			"retention_audit_days":     retentionAudit,
 			"retention_webhook_days":   retentionWebhook,
 			"logging_level":            logLevel,
 			"logging_format":           logFormat,
 			"display_timezone":         displayTimezone,
+			"display_date_format":      displayDateFormat,
+			"display_time_format":      displayTimeFormat,
+			"display_datetime_format":  displayDatetimeFormat,
 		})
 	}
 

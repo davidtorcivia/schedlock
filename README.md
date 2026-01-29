@@ -156,9 +156,9 @@ See `.env.example` for full configuration options.
 - Optional YAML config file: `/data/config.yaml` (or set `SCHEDLOCK_CONFIG_FILE`).
 - Runtime settings saved in the web UI override config file/env for:
   - Approval timeout and default action
-  - Retention windows
+  - Retention enable/disable and retention windows
   - Logging level/format
-  - Display timezone
+  - Display timezone and formats
 
 ## Notification Providers
 

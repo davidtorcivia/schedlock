@@ -18,6 +18,7 @@ func TestRuntimeSettingsApplyTo(t *testing.T) {
 			DefaultAction:  "deny",
 		},
 		Retention: config.RetentionConfig{
+			Enabled:               true,
 			CompletedRequestsDays: 10,
 			AuditLogDays:          20,
 			WebhookFailuresDays:   30,
@@ -27,16 +28,21 @@ func TestRuntimeSettingsApplyTo(t *testing.T) {
 			Format: "json",
 		},
 		Display: config.DisplayConfig{
-			Timezone: "UTC",
+			Timezone:       "UTC",
+			DateFormat:     "Jan 2, 2006",
+			TimeFormat:     "3:04 PM",
+			DatetimeFormat: "Jan 2, 2006 at 3:04 PM",
 		},
 	}
 
+	retentionEnabled := false
 	settings := &RuntimeSettings{
 		Approval: &ApprovalSettings{
 			TimeoutMinutes: 45,
 			DefaultAction:  "approve",
 		},
 		Retention: &RetentionSettings{
+			Enabled:               &retentionEnabled,
 			CompletedRequestsDays: 60,
 			AuditLogDays:          90,
 			WebhookFailuresDays:   120,
@@ -46,7 +52,10 @@ func TestRuntimeSettingsApplyTo(t *testing.T) {
 			Format: "text",
 		},
 		Display: &DisplaySettings{
-			Timezone: "UTC",
+			Timezone:       "UTC",
+			DateFormat:     "2006-01-02",
+			TimeFormat:     "15:04",
+			DatetimeFormat: "2006-01-02 15:04",
 		},
 	}
 
@@ -69,11 +78,23 @@ func TestRuntimeSettingsApplyTo(t *testing.T) {
 	if cfg.Retention.WebhookFailuresDays != 120 {
 		t.Fatalf("expected retention webhook 120, got %d", cfg.Retention.WebhookFailuresDays)
 	}
+	if cfg.Retention.Enabled {
+		t.Fatalf("expected retention enabled false")
+	}
 	if cfg.Logging.Level != "debug" || cfg.Logging.Format != "text" {
 		t.Fatalf("unexpected logging config: %s/%s", cfg.Logging.Level, cfg.Logging.Format)
 	}
 	if cfg.Display.Timezone != "UTC" {
 		t.Fatalf("expected display timezone UTC, got %s", cfg.Display.Timezone)
+	}
+	if cfg.Display.DateFormat != "2006-01-02" {
+		t.Fatalf("expected display date format, got %s", cfg.Display.DateFormat)
+	}
+	if cfg.Display.TimeFormat != "15:04" {
+		t.Fatalf("expected display time format, got %s", cfg.Display.TimeFormat)
+	}
+	if cfg.Display.DatetimeFormat != "2006-01-02 15:04" {
+		t.Fatalf("expected display datetime format, got %s", cfg.Display.DatetimeFormat)
 	}
 }
 
@@ -118,12 +139,14 @@ func TestStoreSaveLoad(t *testing.T) {
 	defer db.Close()
 
 	store := NewStore(db)
+	retentionEnabled := true
 	settings := &RuntimeSettings{
 		Approval: &ApprovalSettings{
 			TimeoutMinutes: 25,
 			DefaultAction:  "deny",
 		},
 		Retention: &RetentionSettings{
+			Enabled:               &retentionEnabled,
 			CompletedRequestsDays: 45,
 			AuditLogDays:          60,
 			WebhookFailuresDays:   90,
@@ -133,7 +156,10 @@ func TestStoreSaveLoad(t *testing.T) {
 			Format: "json",
 		},
 		Display: &DisplaySettings{
-			Timezone: "UTC",
+			Timezone:       "UTC",
+			DateFormat:     "Jan 2, 2006",
+			TimeFormat:     "3:04 PM",
+			DatetimeFormat: "Jan 2, 2006 at 3:04 PM",
 		},
 	}
 

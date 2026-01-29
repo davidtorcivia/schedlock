@@ -37,9 +37,10 @@ type ApprovalSettings struct {
 }
 
 type RetentionSettings struct {
-	CompletedRequestsDays int `json:"completed_requests_days"`
-	AuditLogDays          int `json:"audit_log_days"`
-	WebhookFailuresDays   int `json:"webhook_failures_days"`
+	Enabled               *bool `json:"enabled,omitempty"`
+	CompletedRequestsDays int   `json:"completed_requests_days"`
+	AuditLogDays          int   `json:"audit_log_days"`
+	WebhookFailuresDays   int   `json:"webhook_failures_days"`
 }
 
 type LoggingSettings struct {
@@ -48,7 +49,10 @@ type LoggingSettings struct {
 }
 
 type DisplaySettings struct {
-	Timezone string `json:"timezone"`
+	Timezone       string `json:"timezone"`
+	DateFormat     string `json:"date_format"`
+	TimeFormat     string `json:"time_format"`
+	DatetimeFormat string `json:"datetime_format"`
 }
 
 // Load retrieves runtime settings from the database.
@@ -155,6 +159,9 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 		}
 	}
 	if s.Retention != nil {
+		if s.Retention.Enabled != nil {
+			cfg.Retention.Enabled = *s.Retention.Enabled
+		}
 		if s.Retention.CompletedRequestsDays > 0 {
 			cfg.Retention.CompletedRequestsDays = s.Retention.CompletedRequestsDays
 		}
@@ -175,6 +182,17 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 	}
 	if s.Display != nil && s.Display.Timezone != "" {
 		cfg.Display.Timezone = s.Display.Timezone
+	}
+	if s.Display != nil {
+		if s.Display.DateFormat != "" {
+			cfg.Display.DateFormat = s.Display.DateFormat
+		}
+		if s.Display.TimeFormat != "" {
+			cfg.Display.TimeFormat = s.Display.TimeFormat
+		}
+		if s.Display.DatetimeFormat != "" {
+			cfg.Display.DatetimeFormat = s.Display.DatetimeFormat
+		}
 	}
 
 	return nil
