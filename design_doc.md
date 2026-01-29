@@ -2705,16 +2705,17 @@ dbs:
 
 ### 12.1 Configuration Hierarchy
 
-Current implementation uses **environment variables and built-in defaults only**.
-YAML config files and database-stored settings are planned but not implemented yet.
+Configuration precedence (highest to lowest):
 
-1. **Environment variables** — Highest priority, required for secrets
-2. **Defaults** — Built-in fallbacks
+1. **Runtime settings (database)** — Updated via web UI
+2. **Environment variables** — Required for secrets and deployment overrides
+3. **Config file** (`/data/config.yaml` or `SCHEDLOCK_CONFIG_FILE`) — Optional, for complex settings
+4. **Defaults** — Built-in fallbacks
 
 ### 12.2 Full Configuration Reference
 
 ```yaml
-# Planned format for /data/config.yaml (not implemented in current build)
+# /data/config.yaml (optional)
 
 server:
   host: "0.0.0.0"
@@ -2841,16 +2842,15 @@ logging:
 
 ### 12.3 Runtime-Changeable Settings
 
-Planned for a future release. The current build does not persist runtime settings via the Web UI.
+These can be modified via Web UI without restart:
 
 | Setting | Location | Description |
 |---------|----------|-------------|
-| Approval timeout | Settings > Approval | Minutes to wait |
-| Default action | Settings > Approval | Approve/deny on timeout |
-| Per-operation approval | Settings > Approval | Which ops need approval |
-| Notification enable/disable | Settings > Notifications | Toggle providers |
-| Notification priority | Settings > Notifications | Alert level |
-| Moltbot webhook URL | Settings > Moltbot | Webhook endpoint |
+| Approval timeout | Settings > Runtime Settings | Minutes to wait |
+| Default action | Settings > Runtime Settings | Approve/deny on timeout |
+| Retention windows | Settings > Runtime Settings | Requests/audit/webhook days |
+| Log level/format | Settings > Runtime Settings | Logging behavior |
+| Display timezone | Settings > Runtime Settings | UI formatting |
 
 ---
 

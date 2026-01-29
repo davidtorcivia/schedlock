@@ -19,6 +19,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/notifications/telegram"
 	"github.com/dtorcivia/schedlock/internal/requests"
 	"github.com/dtorcivia/schedlock/internal/server/middleware"
+	"github.com/dtorcivia/schedlock/internal/settings"
 	"github.com/dtorcivia/schedlock/internal/tokens"
 	"github.com/dtorcivia/schedlock/internal/util"
 	"github.com/dtorcivia/schedlock/internal/web"
@@ -124,6 +125,9 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	// Initialize session manager
 	sessionMgr := web.NewSessionManager(db, &cfg.Auth)
 
+	// Initialize settings store
+	settingsStore := settings.NewStore(db)
+
 	// Initialize API handler
 	apiHandler := api.NewHandler(
 		cfg,
@@ -143,6 +147,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 		requestRepo,
 		apiKeyRepo,
 		tokenRepo,
+		settingsStore,
 		eng,
 		oauthMgr,
 		notificationMgr,
@@ -153,7 +158,7 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 	}
 
 	// Initialize workers
-	timeoutWorker := workers.NewTimeoutWorker(requestRepo, db, eng, time.Duration(cfg.Approval.TimeoutMinutes)*time.Minute/2, cfg.Approval.DefaultAction)
+	timeoutWorker := workers.NewTimeoutWorker(requestRepo, db, eng, &cfg.Approval, 30*time.Second)
 	cleanupWorker := workers.NewCleanupWorker(db, &cfg.Retention)
 
 	s := &Server{

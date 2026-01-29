@@ -151,6 +151,15 @@ POST /api/requests/{requestId}/cancel
 
 See `.env.example` for full configuration options.
 
+### Config File and Runtime Overrides
+
+- Optional YAML config file: `/data/config.yaml` (or set `SCHEDLOCK_CONFIG_FILE`).
+- Runtime settings saved in the web UI override config file/env for:
+  - Approval timeout and default action
+  - Retention windows
+  - Logging level/format
+  - Display timezone
+
 ## Notification Providers
 
 ### ntfy

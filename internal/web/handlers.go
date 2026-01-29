@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/google"
 	"github.com/dtorcivia/schedlock/internal/notifications"
 	"github.com/dtorcivia/schedlock/internal/requests"
+	"github.com/dtorcivia/schedlock/internal/settings"
 	"github.com/dtorcivia/schedlock/internal/tokens"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
@@ -25,6 +28,7 @@ type Handler struct {
 	templates       *template.Template
 	sessionMgr      *SessionManager
 	loginLimiter    *LoginLimiter
+	settingsStore   *settings.Store
 	requestRepo     *requests.Repository
 	apiKeyRepo      *apikeys.Repository
 	tokenRepo       *tokens.Repository
@@ -41,6 +45,7 @@ func NewHandler(
 	requestRepo *requests.Repository,
 	apiKeyRepo *apikeys.Repository,
 	tokenRepo *tokens.Repository,
+	settingsStore *settings.Store,
 	eng *engine.Engine,
 	oauthMgr *google.OAuthManager,
 	notificationMgr *notifications.Manager,
@@ -57,6 +62,7 @@ func NewHandler(
 		templates:       tmpl,
 		sessionMgr:      sessionMgr,
 		loginLimiter:    NewLoginLimiter(10, 10*time.Minute),
+		settingsStore:   settingsStore,
 		requestRepo:     requestRepo,
 		apiKeyRepo:      apiKeyRepo,
 		tokenRepo:       tokenRepo,
@@ -252,10 +258,10 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	pending, _ := h.requestRepo.GetPending(ctx)
 
 	h.render(w, r, "dashboard.html", map[string]interface{}{
-		"Stats":          stats,
-		"APIKeyStats":    apiKeyStats,
-		"APIKeyTotal":    totalAPIKeys,
-		"PendingCount":   len(pending),
+		"Stats":           stats,
+		"APIKeyStats":     apiKeyStats,
+		"APIKeyTotal":     totalAPIKeys,
+		"PendingCount":    len(pending),
 		"PendingRequests": pending,
 	})
 }
@@ -455,12 +461,145 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 	providers := h.notificationMgr.GetProviders()
 	oauthConnected := h.oauthMgr.IsAuthenticated()
+	updated := r.URL.Query().Get("updated") == "1"
 
 	h.render(w, r, "settings.html", map[string]interface{}{
 		"Providers":      providers,
 		"OAuthConnected": oauthConnected,
 		"Config":         h.config,
+		"Updated":        updated,
 	})
+}
+
+// SaveSettings handles runtime settings updates from the web UI.
+func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
+	if h.settingsStore == nil {
+		http.Error(w, "settings store unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	approvalTimeout, err := parseIntField(r, "approval_timeout_minutes", h.config.Approval.TimeoutMinutes)
+	if err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+	retentionRequests, err := parseIntField(r, "retention_completed_days", h.config.Retention.CompletedRequestsDays)
+	if err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+	retentionAudit, err := parseIntField(r, "retention_audit_days", h.config.Retention.AuditLogDays)
+	if err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+	retentionWebhook, err := parseIntField(r, "retention_webhook_failures_days", h.config.Retention.WebhookFailuresDays)
+	if err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+
+	defaultAction := strings.TrimSpace(r.FormValue("approval_default_action"))
+	if defaultAction == "" {
+		defaultAction = h.config.Approval.DefaultAction
+	}
+	logLevel := strings.TrimSpace(r.FormValue("logging_level"))
+	if logLevel == "" {
+		logLevel = h.config.Logging.Level
+	}
+	logFormat := strings.TrimSpace(r.FormValue("logging_format"))
+	if logFormat == "" {
+		logFormat = h.config.Logging.Format
+	}
+	displayTimezone := strings.TrimSpace(r.FormValue("display_timezone"))
+	if displayTimezone == "" {
+		displayTimezone = h.config.Display.Timezone
+	}
+
+	settingsPayload := &settings.RuntimeSettings{
+		Approval: &settings.ApprovalSettings{
+			TimeoutMinutes: approvalTimeout,
+			DefaultAction:  defaultAction,
+		},
+		Retention: &settings.RetentionSettings{
+			CompletedRequestsDays: retentionRequests,
+			AuditLogDays:          retentionAudit,
+			WebhookFailuresDays:   retentionWebhook,
+		},
+		Logging: &settings.LoggingSettings{
+			Level:  logLevel,
+			Format: logFormat,
+		},
+		Display: &settings.DisplaySettings{
+			Timezone: displayTimezone,
+		},
+	}
+
+	if err := settingsPayload.Validate(); err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+
+	if err := h.settingsStore.Save(ctx, settingsPayload); err != nil {
+		h.renderSettingsError(w, r, "failed to save settings")
+		return
+	}
+
+	if err := settingsPayload.ApplyTo(h.config); err != nil {
+		h.renderSettingsError(w, r, err.Error())
+		return
+	}
+
+	util.SetDefaultLogger(util.NewLogger(h.config.Logging.Level, h.config.Logging.Format))
+	formatter, err := util.NewDisplayFormatter(
+		h.config.Display.Timezone,
+		h.config.Display.DateFormat,
+		h.config.Display.TimeFormat,
+		h.config.Display.DatetimeFormat,
+	)
+	if err == nil {
+		util.SetDefaultFormatter(formatter)
+	}
+
+	if h.auditLogger != nil {
+		h.auditLogger.Log(ctx, database.AuditSettingsChanged, "", "", "web:admin", map[string]interface{}{
+			"approval_timeout_minutes": approvalTimeout,
+			"approval_default_action":  defaultAction,
+			"retention_completed_days": retentionRequests,
+			"retention_audit_days":     retentionAudit,
+			"retention_webhook_days":   retentionWebhook,
+			"logging_level":            logLevel,
+			"logging_format":           logFormat,
+			"display_timezone":         displayTimezone,
+		})
+	}
+
+	http.Redirect(w, r, "/settings?updated=1", http.StatusSeeOther)
+}
+
+func (h *Handler) renderSettingsError(w http.ResponseWriter, r *http.Request, message string) {
+	providers := h.notificationMgr.GetProviders()
+	oauthConnected := h.oauthMgr.IsAuthenticated()
+	h.render(w, r, "settings.html", map[string]interface{}{
+		"Providers":      providers,
+		"OAuthConnected": oauthConnected,
+		"Config":         h.config,
+		"Error":          message,
+	})
+}
+
+func parseIntField(r *http.Request, name string, fallback int) (int, error) {
+	value := strings.TrimSpace(r.FormValue(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value for %s", name)
+	}
+	return parsed, nil
 }
 
 // TestNotification tests a notification provider.

@@ -14,6 +14,7 @@ import (
 	schedcrypto "github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/server"
+	"github.com/dtorcivia/schedlock/internal/settings"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
@@ -67,6 +68,21 @@ func run() error {
 	logger.Info("Database initialized",
 		"path", cfg.Database.Path,
 	)
+
+	// Load runtime settings (database overrides)
+	settingsStore := settings.NewStore(db)
+	runtimeSettings, err := settingsStore.Load(context.Background())
+	if err != nil {
+		logger.Warn("Failed to load runtime settings", "error", err)
+	} else if runtimeSettings != nil {
+		if err := runtimeSettings.ApplyTo(cfg); err != nil {
+			logger.Warn("Failed to apply runtime settings", "error", err)
+		} else {
+			logger = util.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
+			util.SetDefaultLogger(logger)
+			logger.Info("Runtime settings applied")
+		}
+	}
 
 	// Create and configure server
 	srv, err := server.New(cfg, db)

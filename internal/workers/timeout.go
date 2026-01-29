@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/engine"
 	"github.com/dtorcivia/schedlock/internal/requests"
@@ -17,18 +18,21 @@ type TimeoutWorker struct {
 	db          *database.DB
 	engine      *engine.Engine
 	interval    time.Duration
-	defaultAction string
+	config      *config.ApprovalConfig
 	webhookChan chan<- string // Channel to notify webhook client of expirations
 }
 
 // NewTimeoutWorker creates a new timeout worker.
-func NewTimeoutWorker(requestRepo *requests.Repository, db *database.DB, engine *engine.Engine, interval time.Duration, defaultAction string) *TimeoutWorker {
+func NewTimeoutWorker(requestRepo *requests.Repository, db *database.DB, engine *engine.Engine, cfg *config.ApprovalConfig, interval time.Duration) *TimeoutWorker {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
 	return &TimeoutWorker{
 		requestRepo: requestRepo,
 		db:          db,
 		engine:      engine,
 		interval:    interval,
-		defaultAction: defaultAction,
+		config:      cfg,
 	}
 }
 
@@ -74,7 +78,11 @@ func (w *TimeoutWorker) processExpired(ctx context.Context) {
 	util.Info("Processing expired requests", "count", len(expired))
 
 	for _, req := range expired {
-		if w.defaultAction == "approve" && w.engine != nil {
+		defaultAction := "deny"
+		if w.config != nil && w.config.DefaultAction != "" {
+			defaultAction = w.config.DefaultAction
+		}
+		if defaultAction == "approve" && w.engine != nil {
 			if err := w.engine.ProcessApproval(ctx, req.ID, "approve", "timeout"); err != nil {
 				util.Error("Failed to auto-approve expired request", "error", err, "request_id", req.ID)
 				continue

@@ -32,6 +32,7 @@ func (w *CleanupWorker) Start(ctx context.Context) {
 		"interval", w.interval,
 		"request_days", w.config.CompletedRequestsDays,
 		"audit_days", w.config.AuditLogDays,
+		"webhook_days", w.config.WebhookFailuresDays,
 	)
 
 	ticker := time.NewTicker(w.interval)
@@ -172,8 +173,8 @@ func (w *CleanupWorker) cleanupNotificationLogs(ctx context.Context) {
 func (w *CleanupWorker) cleanupWebhookFailures(ctx context.Context) {
 	result, err := w.db.ExecContext(ctx, `
 		DELETE FROM webhook_failures
-		WHERE created_at < datetime('now', '-7 days')
-	`)
+		WHERE created_at < datetime('now', ?)
+	`, fmt.Sprintf("-%d days", w.config.WebhookFailuresDays))
 
 	if err != nil {
 		util.Error("Failed to cleanup webhook failures", "error", err)

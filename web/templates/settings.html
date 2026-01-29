@@ -2,28 +2,33 @@
 <div class="px-4 py-6 sm:px-0">
     <h1 class="text-2xl font-semibold text-gray-900 mb-6">Settings</h1>
 
+    {{if .Error}}
+    <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
+        {{.Error}}
+    </div>
+    {{end}}
+    {{if .Updated}}
+    <div class="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded mb-6">
+        Settings updated.
+    </div>
+    {{end}}
+
     <!-- Google Calendar Connection -->
     <div class="bg-white shadow rounded-lg p-6 mb-6">
         <h2 class="text-lg font-medium text-gray-900 mb-4">Google Calendar</h2>
         {{if .OAuthConnected}}
         <div class="flex items-center justify-between">
-            <div class="flex items-center">
-                <span class="text-green-500 text-2xl mr-3">✓</span>
-                <div>
-                    <p class="text-sm font-medium text-gray-900">Connected</p>
-                    <p class="text-sm text-gray-500">Google Calendar is configured and ready.</p>
-                </div>
+            <div>
+                <p class="text-sm font-medium text-gray-900">Connected</p>
+                <p class="text-sm text-gray-500">Google Calendar is configured and ready.</p>
             </div>
             <a href="/oauth/start" class="text-indigo-600 hover:text-indigo-900 text-sm">Reconnect</a>
         </div>
         {{else}}
         <div class="flex items-center justify-between">
-            <div class="flex items-center">
-                <span class="text-yellow-500 text-2xl mr-3">!</span>
-                <div>
-                    <p class="text-sm font-medium text-gray-900">Not Connected</p>
-                    <p class="text-sm text-gray-500">Connect to Google Calendar to enable calendar operations.</p>
-                </div>
+            <div>
+                <p class="text-sm font-medium text-gray-900">Not Connected</p>
+                <p class="text-sm text-gray-500">Connect to Google Calendar to enable calendar operations.</p>
             </div>
             <a href="/oauth/start" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
                 Connect Google Calendar
@@ -39,18 +44,11 @@
         <div class="space-y-4">
             {{range .Providers}}
             <div class="flex items-center justify-between py-3 border-b border-gray-100 last:border-0">
-                <div class="flex items-center">
-                    {{if .Enabled}}
-                    <span class="text-green-500 text-xl mr-3">✓</span>
-                    {{else}}
-                    <span class="text-gray-300 text-xl mr-3">○</span>
-                    {{end}}
-                    <div>
-                        <p class="text-sm font-medium text-gray-900">{{.Name}}</p>
-                        <p class="text-xs text-gray-500">
-                            {{if .Enabled}}Enabled{{else}}Not configured{{end}}
-                        </p>
-                    </div>
+                <div>
+                    <p class="text-sm font-medium text-gray-900">{{.Name}}</p>
+                    <p class="text-xs text-gray-500">
+                        {{if .Enabled}}Enabled{{else}}Not configured{{end}}
+                    </p>
                 </div>
                 {{if .Enabled}}
                 <form action="/settings/test-notification" method="POST" class="inline">
@@ -70,6 +68,92 @@
                 Configure notification providers via environment variables. See the documentation for details.
             </p>
         </div>
+    </div>
+
+    <!-- Runtime Settings -->
+    <div class="bg-white shadow rounded-lg p-6 mb-6">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Runtime Settings</h2>
+        <form action="/settings/save" method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">Approval</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Timeout (minutes)</label>
+                        <input type="number" min="1" max="1440" name="approval_timeout_minutes" value="{{.Config.Approval.TimeoutMinutes}}"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Default action</label>
+                        <select name="approval_default_action" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                            <option value="deny" {{if eq .Config.Approval.DefaultAction "deny"}}selected{{end}}>Deny</option>
+                            <option value="approve" {{if eq .Config.Approval.DefaultAction "approve"}}selected{{end}}>Approve</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">Retention</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Completed requests (days)</label>
+                        <input type="number" min="1" max="3650" name="retention_completed_days" value="{{.Config.Retention.CompletedRequestsDays}}"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Audit logs (days)</label>
+                        <input type="number" min="1" max="3650" name="retention_audit_days" value="{{.Config.Retention.AuditLogDays}}"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Webhook failures (days)</label>
+                        <input type="number" min="1" max="3650" name="retention_webhook_failures_days" value="{{.Config.Retention.WebhookFailuresDays}}"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">Logging</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Level</label>
+                        <select name="logging_level" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                            <option value="debug" {{if eq .Config.Logging.Level "debug"}}selected{{end}}>Debug</option>
+                            <option value="info" {{if eq .Config.Logging.Level "info"}}selected{{end}}>Info</option>
+                            <option value="warn" {{if eq .Config.Logging.Level "warn"}}selected{{end}}>Warn</option>
+                            <option value="error" {{if eq .Config.Logging.Level "error"}}selected{{end}}>Error</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Format</label>
+                        <select name="logging_format" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+                            <option value="json" {{if eq .Config.Logging.Format "json"}}selected{{end}}>JSON</option>
+                            <option value="text" {{if eq .Config.Logging.Format "text"}}selected{{end}}>Text</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">Display</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">Timezone</label>
+                        <input type="text" name="display_timezone" value="{{.Config.Display.Timezone}}"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="America/New_York">
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end">
+                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
+                    Save Settings
+                </button>
+            </div>
+        </form>
     </div>
 
     <!-- Configuration Info -->
