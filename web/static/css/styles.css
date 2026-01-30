@@ -1124,6 +1124,87 @@ pre code {
 }
 
 /* --------------------------------------------------------------------------
+   Toast Notifications
+   -------------------------------------------------------------------------- */
+
+.toast-container {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  pointer-events: none;
+}
+
+.toast {
+  padding: var(--space-4) var(--space-5);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  max-width: 400px;
+  pointer-events: auto;
+  animation: toast-slide-in 0.3s ease-out;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.toast-success {
+  background-color: var(--success-50);
+  border: 1px solid rgba(21, 128, 61, 0.3);
+  color: var(--success-900);
+}
+
+.toast-error {
+  background-color: var(--error-50);
+  border: 1px solid rgba(185, 28, 28, 0.3);
+  color: var(--error-900);
+}
+
+.toast-info {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: var(--space-1);
+  margin-left: auto;
+  opacity: 0.7;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+@keyframes toast-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes toast-fade-out {
+  to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.toast.hiding {
+  animation: toast-fade-out 0.2s ease-in forwards;
+}
+
+/* --------------------------------------------------------------------------
    Empty States
    -------------------------------------------------------------------------- */
 
@@ -1167,12 +1248,23 @@ pre code {
   justify-content: center;
   padding: var(--space-6);
   background-color: var(--bg-canvas);
-  background-image: 
+  position: relative;
+}
+
+.login-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
     radial-gradient(circle at 20% 30%, var(--accent-subtle) 0%, transparent 50%),
     radial-gradient(circle at 80% 70%, var(--accent-muted) 0%, transparent 40%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .login-card {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 400px;
   background-color: var(--bg-primary);

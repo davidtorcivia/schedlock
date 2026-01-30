@@ -16,6 +16,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/server"
 	"github.com/dtorcivia/schedlock/internal/settings"
 	"github.com/dtorcivia/schedlock/internal/util"
+	"github.com/dtorcivia/schedlock/internal/web"
 )
 
 func main() {
@@ -43,8 +44,8 @@ func main() {
 }
 
 func run() error {
-	// Load configuration
-	cfg, err := config.Load()
+	// Load configuration with setup mode support
+	cfg, isSetupMode, err := config.LoadWithSetupMode()
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
@@ -52,6 +53,14 @@ func run() error {
 	// Initialize logger
 	logger := util.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
 	util.SetDefaultLogger(logger)
+
+	// If first run, start setup server instead
+	if isSetupMode {
+		logger.Info("Starting SchedLock in SETUP MODE",
+			"port", cfg.Server.Port,
+		)
+		return runSetupServer(cfg)
+	}
 
 	logger.Info("Starting SchedLock Calendar Proxy",
 		"version", "1.0.0",
@@ -141,5 +150,66 @@ func run() error {
 	}
 
 	logger.Info("Server stopped")
+	return nil
+}
+
+// runSetupServer starts a minimal server for the first-run setup wizard.
+func runSetupServer(cfg *config.Config) error {
+	logger := util.GetDefaultLogger()
+	configPath := config.GetConfigFilePath()
+
+	setupHandler, err := web.NewSetupHandler(cfg, configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create setup handler: %w", err)
+	}
+
+	mux := http.NewServeMux()
+
+	// Static files
+	mux.Handle("GET /static/", http.StripPrefix("/static/",
+		http.FileServer(http.Dir("web/static"))))
+
+	setupHandler.RegisterRoutes(mux)
+
+	httpServer := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:      mux,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+	}
+
+	// Channel for server errors
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("Setup server listening",
+			"addr", httpServer.Addr,
+			"message", "Visit the server in your browser to complete setup",
+		)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// Wait for shutdown signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case sig := <-quit:
+		logger.Info("Received shutdown signal", "signal", sig.String())
+	case err := <-serverErr:
+		return fmt.Errorf("server error: %w", err)
+	}
+
+	// Graceful shutdown
+	logger.Info("Shutting down setup server...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Server shutdown error", "error", err)
+	}
+
+	logger.Info("Setup server stopped")
 	return nil
 }

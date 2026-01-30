@@ -1,0 +1,37 @@
+{{define "content"}}
+<div class="login-page">
+    <div class="login-card animate-fade-in-scale" style="max-width: 500px; text-align: center;">
+        <div class="mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" style="width: 64px; height: 64px; color: var(--success-600); margin: 0 auto;">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+        </div>
+
+        <h1 style="font-family: var(--font-serif); margin-bottom: var(--space-2); font-weight: 400;">Setup Complete</h1>
+        <p style="color: var(--text-secondary); margin-bottom: var(--space-8);">
+            Your configuration has been saved successfully.
+        </p>
+
+        <div class="alert alert-warning mb-6" style="text-align: left;">
+            <strong>Important:</strong> Please restart the SchedLock server for changes to take effect.
+        </div>
+
+        <div style="background: var(--bg-secondary); padding: var(--space-4); border-radius: 8px; text-align: left; margin-bottom: var(--space-6);">
+            <p class="text-sm" style="color: var(--text-secondary); margin-bottom: var(--space-2);">
+                Restart the server using one of these methods:
+            </p>
+            <ul class="text-sm" style="color: var(--text-tertiary); margin: 0; padding-left: var(--space-5);">
+                <li style="margin-bottom: var(--space-1);">Docker: <code>docker restart schedlock</code></li>
+                <li style="margin-bottom: var(--space-1);">systemd: <code>sudo systemctl restart schedlock</code></li>
+                <li>Manual: Stop and start the binary</li>
+            </ul>
+        </div>
+
+        <p class="text-sm" style="color: var(--text-tertiary);">
+            After restarting, you can log in with your admin password at the login page.
+        </p>
+    </div>
+</div>
+{{end}}
+
+{{template "layout" .}}

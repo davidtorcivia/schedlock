@@ -1,0 +1,72 @@
+{{define "content"}}
+<div class="max-w-2xl mx-auto">
+    <div class="page-header">
+        <h1>Google Calendar Setup Required</h1>
+        <p>OAuth credentials need to be configured before connecting</p>
+    </div>
+
+    <div class="alert alert-warning mb-6">
+        <strong>Missing Configuration:</strong> Google OAuth credentials are not set up.
+    </div>
+
+    <div class="card animate-fade-in-scale">
+        <div class="card-body">
+            <h3 style="font-family: var(--font-serif); margin-bottom: var(--space-4);">Setup Instructions</h3>
+
+            <ol style="line-height: 1.8; color: var(--text-secondary); padding-left: var(--space-5);">
+                <li style="margin-bottom: var(--space-3);">
+                    Go to the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener" style="color: var(--accent);">Google Cloud Console</a>
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Create a new project or select an existing one
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Go to <strong>APIs &amp; Services</strong> &rarr; <strong>Library</strong> and enable the <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener" style="color: var(--accent);">Google Calendar API</a>
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Go to <strong>APIs &amp; Services</strong> &rarr; <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener" style="color: var(--accent);">OAuth consent screen</a>:
+                    <ul style="margin-top: var(--space-2); padding-left: var(--space-4); font-size: var(--text-sm);">
+                        <li>Choose <strong>External</strong> user type (or Internal if using Google Workspace)</li>
+                        <li>Fill in app name (e.g., "SchedLock") and your email</li>
+                        <li>Add scope: <code>https://www.googleapis.com/auth/calendar.events</code></li>
+                        <li>Add your email as a test user (required while app is in "Testing" mode)</li>
+                    </ul>
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color: var(--accent);">Credentials</a> &rarr; <strong>Create Credentials</strong> &rarr; <strong>OAuth client ID</strong> (Web application type)
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Add the following as an authorized redirect URI:
+                    <code style="display: block; background: var(--bg-secondary); padding: var(--space-3); border-radius: 6px; margin-top: var(--space-2); font-size: var(--text-sm); word-break: break-all;">{{.BaseURL}}/oauth/callback</code>
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Copy the <strong>Client ID</strong> and <strong>Client Secret</strong>
+                </li>
+                <li style="margin-bottom: var(--space-3);">
+                    Add them to your configuration:
+                    <pre style="background: var(--bg-secondary); padding: var(--space-4); border-radius: 6px; margin-top: var(--space-2); font-size: var(--text-sm); overflow-x: auto;"># Environment variables
+SCHEDLOCK_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+SCHEDLOCK_GOOGLE_CLIENT_SECRET=your-client-secret
+
+# Or in data/config.yaml
+google:
+  client_id: "your-client-id.apps.googleusercontent.com"
+  client_secret: "your-client-secret"</pre>
+                </li>
+                <li>Restart SchedLock and return to this page</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="mt-6" style="text-align: center;">
+        <a href="/settings" class="btn btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px;">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+            Back to Settings
+        </a>
+    </div>
+</div>
+{{end}}
+
+{{template "layout" .}}
