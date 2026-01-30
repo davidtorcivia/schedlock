@@ -486,14 +486,33 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"tier": tier,
 	})
 
-	// If HTMX request, return the new key display
+	// If HTMX request, return the new key display with copy button
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<div class="alert alert-success">
 			<p><strong>API Key Created!</strong></p>
-			<p>Copy this key now - it won't be shown again:</p>
-			<code class="key-display">` + fullKey + `</code>
-		</div>`))
+			<p style="margin-bottom: var(--space-2);">Copy this key now - it won't be shown again:</p>
+			<div style="display: flex; gap: var(--space-2); align-items: stretch;">
+				<code id="new-api-key" class="key-display" style="flex: 1; margin: 0;">` + fullKey + `</code>
+				<button type="button" onclick="copyApiKey()" class="btn btn-primary" style="white-space: nowrap;">
+					<span id="copy-text">Copy</span>
+				</button>
+			</div>
+			<p style="margin-top: var(--space-3); font-size: var(--text-sm); color: var(--text-secondary);">
+				<a href="/apikeys" style="color: var(--accent);">Refresh page</a> to see the key in your list.
+			</p>
+		</div>
+		<script>
+		function copyApiKey() {
+			const key = document.getElementById('new-api-key').textContent;
+			navigator.clipboard.writeText(key).then(function() {
+				document.getElementById('copy-text').textContent = 'Copied!';
+				setTimeout(function() {
+					document.getElementById('copy-text').textContent = 'Copy';
+				}, 2000);
+			});
+		}
+		</script>`))
 		return
 	}
 
