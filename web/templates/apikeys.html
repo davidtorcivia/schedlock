@@ -1,81 +1,87 @@
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-semibold text-gray-900">API Keys</h1>
-    </div>
+<div class="page-header">
+    <h1>API Keys</h1>
+    <p>Manage access credentials for calendar operations</p>
+</div>
 
-    <!-- Create New Key Form -->
-    <div class="bg-white shadow rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-4">Create New API Key</h2>
-        <form action="/apikeys" method="POST" class="flex flex-wrap gap-4 items-end"
+<!-- Create New Key Form -->
+<div class="card mb-8 animate-fade-in-scale">
+    <div class="card-header">
+        <h3>Create New API Key</h3>
+        <p>Generate a new key for your applications</p>
+    </div>
+    <div class="card-body">
+        <form action="/apikeys" method="POST"
               hx-post="/apikeys" hx-target="#key-result" hx-swap="innerHTML">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <div class="flex-1 min-w-[200px]">
-                <label for="name" class="block text-sm font-medium text-gray-700">Key Name</label>
-                <input type="text" name="name" id="name" required
-                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm"
-                       placeholder="e.g., Moltbot Production">
+            
+            <div class="form-row">
+                <div class="form-group mb-0">
+                    <label for="name" class="form-label">Key Name</label>
+                    <input type="text" name="name" id="name" required
+                           class="form-input"
+                           placeholder="e.g., Production API Client">
+                </div>
+                <div class="form-group mb-0">
+                    <label for="tier" class="form-label">Access Tier</label>
+                    <select name="tier" id="tier" required class="form-select">
+                        <option value="read">Read Only &mdash; View calendars and events</option>
+                        <option value="write" selected>Write &mdash; Full access with approval</option>
+                        <option value="admin">Admin &mdash; Includes web UI access</option>
+                    </select>
+                </div>
             </div>
-            <div class="min-w-[150px]">
-                <label for="tier" class="block text-sm font-medium text-gray-700">Tier</label>
-                <select name="tier" id="tier" required
-                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
-                    <option value="read">Read (view only)</option>
-                    <option value="write" selected>Write (full access)</option>
-                    <option value="admin">Admin (includes web UI)</option>
-                </select>
-            </div>
-            <div>
-                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded font-medium">
-                    Create Key
-                </button>
+            
+            <div class="mt-6">
+                <button type="submit" class="btn btn-primary">Create API Key</button>
             </div>
         </form>
-        <div id="key-result" class="mt-4"></div>
+        <div id="key-result"></div>
     </div>
+</div>
 
-    <!-- Existing Keys -->
-    {{if .Keys}}
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
+<!-- Existing Keys -->
+{{if .Keys}}
+<div class="card animate-fade-in-scale" style="animation-delay: 50ms;">
+    <div class="card-header">
+        <h3>Active API Keys</h3>
+        <p>Your current API credentials</p>
+    </div>
+    <div class="table-container">
+        <table class="table">
+            <thead>
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Prefix</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tier</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Used</th>
-                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    <th>Name</th>
+                    <th>Prefix</th>
+                    <th>Tier</th>
+                    <th>Created</th>
+                    <th>Last Used</th>
+                    <th style="text-align: right;">Actions</th>
                 </tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody>
                 {{range .Keys}}
                 <tr>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        {{.Name}}
+                    <td style="color: var(--text-primary); font-weight: 500;">{{.Name}}</td>
+                    <td class="font-mono" style="font-size: var(--text-xs);">{{.KeyPrefix}}</td>
+                    <td>
+                        {{if eq .Tier "admin"}}
+                        <span class="badge badge-warning">{{.Tier}}</span>
+                        {{else if eq .Tier "write"}}
+                        <span class="badge badge-primary">{{.Tier}}</span>
+                        {{else}}
+                        <span class="badge badge-default">{{.Tier}}</span>
+                        {{end}}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-500">
-                        {{.KeyPrefix}}
+                    <td>{{formatDate .CreatedAt}}</td>
+                    <td>
+                        {{if .LastUsedAt.Valid}}{{formatDate .LastUsedAt.Time}}{{else}}<span style="color: var(--text-muted);">Never</span>{{end}}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full
-                            {{if eq .Tier "admin"}}bg-purple-100 text-purple-800
-                            {{else if eq .Tier "write"}}bg-blue-100 text-blue-800
-                            {{else}}bg-gray-100 text-gray-800{{end}}">
-                            {{.Tier}}
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{formatDate .CreatedAt}}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{if .LastUsedAt.Valid}}{{formatDate .LastUsedAt.Time}}{{else}}Never{{end}}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <form action="/apikeys/{{.ID}}/revoke" method="POST" class="inline"
-                              onsubmit="return confirm('Are you sure you want to revoke this API key? This cannot be undone.');">
+                    <td style="text-align: right;">
+                        <form action="/apikeys/{{.ID}}/revoke" method="POST" style="display: inline;"
+                              onsubmit="return confirm('Are you sure you want to revoke this API key? This action cannot be undone.');">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                            <button type="submit" class="text-red-600 hover:text-red-900">Revoke</button>
+                            <button type="submit" class="btn btn-ghost btn-sm" style="color: var(--error-700);">Revoke</button>
                         </form>
                     </td>
                 </tr>
@@ -83,29 +89,33 @@
             </tbody>
         </table>
     </div>
-    {{else}}
-    <div class="bg-white shadow rounded-lg p-8 text-center">
-        <span class="text-2xl font-semibold text-gray-500">No API keys</span>
-        <h3 class="mt-4 text-lg font-medium text-gray-900">No API keys yet</h3>
-        <p class="mt-2 text-sm text-gray-500">Create your first API key to start using SchedLock.</p>
-    </div>
-    {{end}}
+</div>
+{{else}}
+<div class="empty-state animate-fade-in">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+    </svg>
+    <h3>No API Keys</h3>
+    <p>Create your first API key to start using SchedLock with your applications.</p>
+</div>
+{{end}}
 
-    <!-- Tier Documentation -->
-    <div class="mt-6 bg-gray-50 rounded-lg p-6">
-        <h3 class="text-sm font-medium text-gray-900 mb-3">API Key Tiers</h3>
-        <dl class="space-y-3 text-sm">
+<!-- Tier Documentation -->
+<div class="card mt-8 animate-fade-in-scale" style="background-color: var(--bg-secondary); animation-delay: 100ms;">
+    <div class="card-body">
+        <h4 style="font-family: var(--font-serif); margin-bottom: var(--space-5); font-weight: 500;">API Key Tiers</h4>
+        <dl style="display: grid; gap: var(--space-5);">
             <div>
-                <dt class="font-medium text-gray-700">Read</dt>
-                <dd class="text-gray-500">View calendars, events, and free/busy information. No write operations.</dd>
+                <dt style="font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); font-size: var(--text-sm);">Read</dt>
+                <dd style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">View calendars, events, and free/busy information. No write operations permitted.</dd>
             </div>
             <div>
-                <dt class="font-medium text-gray-700">Write</dt>
-                <dd class="text-gray-500">Create, update, and delete events (with approval). Includes all read permissions.</dd>
+                <dt style="font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); font-size: var(--text-sm);">Write</dt>
+                <dd style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">Create, update, and delete events (with approval). Includes all read permissions.</dd>
             </div>
             <div>
-                <dt class="font-medium text-gray-700">Admin</dt>
-                <dd class="text-gray-500">Full API access including statistics and audit logs. For monitoring tools.</dd>
+                <dt style="font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); font-size: var(--text-sm);">Admin</dt>
+                <dd style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">Full API access including statistics and audit logs. For monitoring tools and administrative functions.</dd>
             </div>
         </dl>
     </div>

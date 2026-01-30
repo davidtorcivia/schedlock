@@ -1,142 +1,147 @@
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <div class="mb-6">
-        <a href="/pending" class="text-indigo-600 hover:text-indigo-900">&larr; Back to pending</a>
+<div class="mb-6">
+    <a href="/pending" class="btn btn-ghost btn-sm" style="padding-left: 0;">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px;">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+        </svg>
+        Back to Pending
+    </a>
+</div>
+
+<div class="card mb-8 animate-fade-in-scale">
+    <div class="card-header">
+        <div class="flex items-center justify-between" style="flex-wrap: wrap; gap: var(--space-3);">
+            <div>
+                <h2>Request Details</h2>
+                <p class="font-mono text-sm" style="margin-top: var(--space-1); color: var(--text-tertiary);">{{.Request.ID}}</p>
+            </div>
+            <span class="badge 
+                {{if eq .Request.Status "pending_approval"}}badge-primary
+                {{else if eq .Request.Status "approved"}}badge-success
+                {{else if eq .Request.Status "denied"}}badge-error
+                {{else}}badge-default{{end}}">
+                {{.Request.Status}}
+            </span>
+        </div>
     </div>
-
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
-            <div class="flex items-center justify-between">
-                <div>
-                    <h3 class="text-lg leading-6 font-medium text-gray-900">
-                        {{statusIcon .Request.Status}} Request Details
-                    </h3>
-                    <p class="mt-1 max-w-2xl text-sm text-gray-500 font-mono">{{.Request.ID}}</p>
-                </div>
-                <span class="px-3 py-1 inline-flex text-sm leading-5 font-semibold rounded-full {{statusClass .Request.Status}}">
-                    {{.Request.Status}}
-                </span>
+    <div class="card-body">
+        <dl class="dl-grid mb-8">
+            <div class="dl-item">
+                <dt>Operation</dt>
+                <dd>{{.Request.Operation}}</dd>
             </div>
+            <div class="dl-item">
+                <dt>API Key</dt>
+                <dd class="font-mono">{{.Request.APIKeyID}}</dd>
+            </div>
+            <div class="dl-item">
+                <dt>Created</dt>
+                <dd>{{formatTime .Request.CreatedAt}}</dd>
+            </div>
+            <div class="dl-item">
+                <dt>Expires</dt>
+                <dd>{{formatTime .Request.ExpiresAt}}</dd>
+            </div>
+            {{if .Request.DecidedAt.Valid}}
+            <div class="dl-item">
+                <dt>Decided At</dt>
+                <dd>{{formatTime .Request.DecidedAt.Time}}</dd>
+            </div>
+            {{end}}
+            {{if .Request.DecidedBy.Valid}}
+            <div class="dl-item">
+                <dt>Decided By</dt>
+                <dd>{{.Request.DecidedBy.String}}</dd>
+            </div>
+            {{end}}
+        </dl>
+
+        <!-- Payload -->
+        <div class="mb-8">
+            <h5 style="margin-bottom: var(--space-3);">Request Payload</h5>
+            <pre>{{formatJSON .Payload}}</pre>
         </div>
 
-        <div class="px-4 py-5 sm:p-6">
-            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">Operation</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{.Request.Operation}}</dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">API Key</dt>
-                    <dd class="mt-1 text-sm text-gray-900 font-mono">{{.Request.APIKeyID}}</dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">Created</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.CreatedAt}}</dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">Expires</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.ExpiresAt}}</dd>
-                </div>
-                {{if .Request.DecidedAt.Valid}}
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">Decided At</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Request.DecidedAt.Time}}</dd>
-                </div>
-                {{end}}
-                {{if .Request.DecidedBy.Valid}}
-                <div>
-                    <dt class="text-sm font-medium text-gray-500">Decided By</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{.Request.DecidedBy.String}}</dd>
-                </div>
-                {{end}}
-            </dl>
-
-            <!-- Payload -->
-            <div class="mt-6">
-                <h4 class="text-sm font-medium text-gray-500 mb-2">Request Payload</h4>
-                <pre class="bg-gray-50 rounded-lg p-4 text-sm overflow-x-auto">{{formatJSON .Payload}}</pre>
-            </div>
-
-            {{if .Request.SuggestionText.Valid}}
-            <div class="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                <h4 class="text-sm font-medium text-yellow-800 mb-2">Suggested Change</h4>
-                <p class="text-sm text-yellow-700">{{.Request.SuggestionText.String}}</p>
-                <p class="mt-2 text-xs text-yellow-600">
-                    Suggested by {{.Request.SuggestionBy.String}} at {{formatTime .Request.SuggestionAt.Time}}
-                </p>
-            </div>
-            {{end}}
-
-            {{if .Request.Error.Valid}}
-            <div class="mt-6 bg-red-50 border border-red-200 rounded-lg p-4">
-                <h4 class="text-sm font-medium text-red-800 mb-2">Error</h4>
-                <p class="text-sm text-red-700">{{.Request.Error.String}}</p>
-            </div>
-            {{end}}
-
-            {{if .Request.Result}}
-            <div class="mt-6">
-                <h4 class="text-sm font-medium text-gray-500 mb-2">Result</h4>
-                <pre class="bg-green-50 rounded-lg p-4 text-sm overflow-x-auto">{{formatJSON .Request.Result}}</pre>
-            </div>
-            {{end}}
+        {{if .Request.SuggestionText.Valid}}
+        <div class="alert alert-warning mb-6">
+            <h5 style="margin-bottom: var(--space-2);">Suggested Change</h5>
+            <p style="margin-bottom: var(--space-2);">{{.Request.SuggestionText.String}}</p>
+            <p class="text-xs" style="color: var(--text-tertiary); margin: 0;">
+                Suggested by {{.Request.SuggestionBy.String}} at {{formatTime .Request.SuggestionAt.Time}}
+            </p>
         </div>
+        {{end}}
 
-        <!-- Actions -->
-        {{if eq .Request.Status "pending_approval"}}
-        <div class="px-4 py-4 sm:px-6 bg-gray-50 border-t border-gray-200">
-            <div class="flex flex-wrap gap-4">
-                <form action="/requests/{{.Request.ID}}/approve" method="POST">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded font-medium">
-                        Approve Request
-                    </button>
-                </form>
-                <form action="/requests/{{.Request.ID}}/deny" method="POST">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded font-medium">
-                        Deny Request
-                    </button>
-                </form>
-            </div>
+        {{if .Request.Error.Valid}}
+        <div class="alert alert-error mb-6">
+            <h5 style="margin-bottom: var(--space-2);">Error</h5>
+            <p style="margin: 0;">{{.Request.Error.String}}</p>
+        </div>
+        {{end}}
 
-            <!-- Suggest Change Form -->
-            <div class="mt-4">
-                <form action="/requests/{{.Request.ID}}/suggest" method="POST" class="flex gap-2">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <input type="text" name="suggestion" placeholder="Suggest a change..."
-                           class="flex-1 rounded border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
-                    <button type="submit" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded font-medium">
-                        Suggest Change
-                    </button>
-                </form>
-            </div>
+        {{if .Request.Result}}
+        <div>
+            <h5 style="margin-bottom: var(--space-3);">Result</h5>
+            <pre style="background-color: var(--success-50); border-color: rgba(21, 128, 61, 0.2);">{{formatJSON .Request.Result}}</pre>
         </div>
         {{end}}
     </div>
 
-    <!-- Audit Log -->
-    {{if .AuditEntries}}
-    <div class="mt-6 bg-white shadow rounded-lg overflow-hidden">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Audit Log</h3>
+    <!-- Actions -->
+    {{if eq .Request.Status "pending_approval"}}
+    <div class="card-footer">
+        <div style="display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4);">
+            <form action="/requests/{{.Request.ID}}/approve" method="POST" style="display: inline;">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="btn btn-success">Approve Request</button>
+            </form>
+            <form action="/requests/{{.Request.ID}}/deny" method="POST" style="display: inline;">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="btn btn-danger">Deny Request</button>
+            </form>
         </div>
-        <ul class="divide-y divide-gray-200">
-            {{range .AuditEntries}}
-            <li class="px-4 py-3 sm:px-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <span class="text-sm font-medium text-gray-900">{{.EventType}}</span>
-                        <span class="ml-2 text-sm text-gray-500">by {{.Actor}}</span>
+
+        <!-- Suggest Change Form -->
+        <div class="pt-6 border-t">
+            <form action="/requests/{{.Request.ID}}/suggest" method="POST">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <div class="form-row" style="align-items: flex-end;">
+                    <div class="form-group mb-0" style="flex: 1;">
+                        <label for="suggestion" class="form-label">Suggest a Change</label>
+                        <input type="text" id="suggestion" name="suggestion" 
+                               placeholder="Enter your suggestion for this request..."
+                               class="form-input" required>
                     </div>
-                    <span class="text-sm text-gray-500">{{formatTime .Timestamp}}</span>
+                    <div>
+                        <button type="submit" class="btn btn-secondary">Submit Suggestion</button>
+                    </div>
                 </div>
-            </li>
-            {{end}}
-        </ul>
+            </form>
+        </div>
     </div>
     {{end}}
 </div>
+
+<!-- Audit Log -->
+{{if .AuditEntries}}
+<div class="card animate-fade-in-scale" style="animation-delay: 100ms;">
+    <div class="card-header">
+        <h3>Audit Log</h3>
+        <p>Activity history for this request</p>
+    </div>
+    <div class="list-group" style="border: none; border-top: 1px solid var(--border-subtle); border-radius: 0;">
+        {{range .AuditEntries}}
+        <div class="list-item">
+            <div>
+                <span style="font-weight: 500; color: var(--text-primary);">{{.EventType}}</span>
+                <span class="text-sm" style="color: var(--text-tertiary); margin-left: var(--space-2);">by {{.Actor}}</span>
+            </div>
+            <span class="text-sm" style="color: var(--text-tertiary);">{{formatTime .Timestamp}}</span>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}
 {{end}}
 
 {{template "layout" .}}

@@ -1,70 +1,63 @@
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Pending Approvals</h1>
+<div class="page-header">
+    <h1>Pending Approvals</h1>
+    <p>Review and approve calendar operation requests</p>
+</div>
 
-    {{if .Requests}}
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
+{{if .Requests}}
+<div class="card animate-fade-in-scale">
+    <div class="table-container">
+        <table class="table">
+            <thead>
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Operation</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expires</th>
-                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    <th>Request</th>
+                    <th>Operation</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                    <th style="text-align: right;">Actions</th>
                 </tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody>
                 {{range .Requests}}
                 <tr>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <a href="/requests/{{.ID}}" class="text-indigo-600 hover:text-indigo-900 font-mono text-sm">
-                            {{.ID}}
-                        </a>
+                    <td>
+                        <a href="/requests/{{.ID}}">{{.ID}}</a>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                            {{.Operation}}
-                        </span>
+                    <td>
+                        <span class="badge badge-primary">{{.Operation}}</span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{formatTime .CreatedAt}}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{formatTime .ExpiresAt}}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                        <form action="/requests/{{.ID}}/approve" method="POST" class="inline"
-                              hx-post="/requests/{{.ID}}/approve" hx-swap="none">
-                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                            <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
-                                Approve
-                            </button>
-                        </form>
-                        <form action="/requests/{{.ID}}/deny" method="POST" class="inline"
-                              hx-post="/requests/{{.ID}}/deny" hx-swap="none">
-                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                            <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm">
-                                Deny
-                            </button>
-                        </form>
-                        <a href="/requests/{{.ID}}" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded text-sm inline-block">
-                            Details
-                        </a>
+                    <td>{{formatTime .CreatedAt}}</td>
+                    <td>{{formatTime .ExpiresAt}}</td>
+                    <td style="text-align: right;">
+                        <div style="display: inline-flex; gap: var(--space-2);">
+                            <form action="/requests/{{.ID}}/approve" method="POST" style="display: inline;"
+                                  hx-post="/requests/{{.ID}}/approve" hx-swap="none">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                            </form>
+                            <form action="/requests/{{.ID}}/deny" method="POST" style="display: inline;"
+                                  hx-post="/requests/{{.ID}}/deny" hx-swap="none">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                            </form>
+                            <a href="/requests/{{.ID}}" class="btn btn-secondary btn-sm">Details</a>
+                        </div>
                     </td>
                 </tr>
                 {{end}}
             </tbody>
         </table>
     </div>
-    {{else}}
-    <div class="bg-white shadow rounded-lg p-8 text-center">
-        <span class="text-2xl font-semibold text-gray-500">No pending requests</span>
-        <h3 class="mt-4 text-lg font-medium text-gray-900">All caught up!</h3>
-        <p class="mt-2 text-sm text-gray-500">No pending approval requests.</p>
-    </div>
-    {{end}}
 </div>
+{{else}}
+<div class="empty-state animate-fade-in">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <h3>All Caught Up</h3>
+    <p>No pending approval requests. Your calendar operations are up to date.</p>
+</div>
+{{end}}
 {{end}}
 
 {{template "layout" .}}

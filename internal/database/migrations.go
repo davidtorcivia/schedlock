@@ -66,8 +66,24 @@ func getAllMigrations() []migration {
 			version: 1,
 			sql:     migration001InitialSchema,
 		},
+		{
+			version: 2,
+			sql:     migration002NotificationCredentials,
+		},
 	}
 }
+
+const migration002NotificationCredentials = `
+-- Notification credentials table
+-- Stores encrypted credentials for notification providers
+CREATE TABLE IF NOT EXISTS notification_credentials (
+    provider TEXT PRIMARY KEY,              -- 'ntfy', 'pushover', 'telegram'
+    enabled INTEGER NOT NULL DEFAULT 0,     -- 1 = enabled, 0 = disabled
+    credentials_enc BLOB,                   -- AES-256-GCM encrypted JSON
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+`
 
 const migration001InitialSchema = `
 -- API Keys table

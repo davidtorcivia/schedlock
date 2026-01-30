@@ -20,7 +20,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	protected := http.NewServeMux()
 
 	// Dashboard
-	protected.HandleFunc("GET /", h.Dashboard)
 	protected.HandleFunc("GET /dashboard", h.Dashboard)
 
 	// Pending approvals
@@ -42,13 +41,18 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	protected.HandleFunc("GET /settings", h.Settings)
 	protected.HandleFunc("POST /settings/test-notification", h.TestNotification)
 	protected.HandleFunc("POST /settings/save", h.SaveSettings)
+	protected.HandleFunc("POST /settings/notifications", h.SaveNotificationSettings)
 	protected.HandleFunc("GET /oauth/start", h.OAuthStart)
 
 	// Apply session middleware to protected routes
 	protectedHandler := h.sessionMgr.RequireSession(CSRFProtection(protected))
 
+	// Redirect root to dashboard
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+	})
+
 	// Register the protected routes with the main mux
-	mux.Handle("GET /", protectedHandler)
 	mux.Handle("GET /dashboard", protectedHandler)
 	mux.Handle("GET /pending", protectedHandler)
 	mux.Handle("GET /requests/", protectedHandler)

@@ -20,7 +20,7 @@ func (s *Server) setupRoutes() {
 
 	// Wrap API routes with authentication and rate limiting
 	apiHandler := middleware.APIKeyAuth(s.apiKeyRepo, s.rateLimiter)(apiMux)
-	s.router.Handle("/api/", apiHandler)
+	s.router.Handle("/api/{path...}", apiHandler)
 
 	// Telegram webhook (special auth via bot token in URL)
 	if s.telegramHandler != nil {

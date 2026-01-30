@@ -1,58 +1,55 @@
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-2xl font-semibold text-gray-900 mb-6">Audit History</h1>
+<div class="page-header">
+    <h1>Audit History</h1>
+    <p>Complete log of all system activities and decisions</p>
+</div>
 
-    {{if .Entries}}
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
+{{if .Entries}}
+<div class="card animate-fade-in-scale">
+    <div class="table-container">
+        <table class="table">
+            <thead>
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Event</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actor</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP Address</th>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Request</th>
+                    <th>Actor</th>
+                    <th>IP Address</th>
                 </tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody>
                 {{range .Entries}}
                 <tr>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {{formatTime .Timestamp}}
+                    <td>{{formatTime .Timestamp}}</td>
+                    <td>
+                        <span class="badge badge-default">{{.EventType}}</span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
-                            {{.EventType}}
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td>
                         {{if .RequestID.Valid}}
-                        <a href="/requests/{{.RequestID.String}}" class="text-indigo-600 hover:text-indigo-900 font-mono text-sm">
-                            {{.RequestID.String}}
-                        </a>
+                        <a href="/requests/{{.RequestID.String}}">{{.RequestID.String}}</a>
                         {{else}}
-                        <span class="text-gray-400">—</span>
+                        <span style="color: var(--text-muted);">&mdash;</span>
                         {{end}}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {{.Actor}}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
-                        {{if .IPAddress.Valid}}{{.IPAddress.String}}{{else}}—{{end}}
+                    <td style="color: var(--text-primary); font-weight: 500;">{{.Actor}}</td>
+                    <td class="font-mono" style="font-size: var(--text-xs);">
+                        {{if .IPAddress.Valid}}{{.IPAddress.String}}{{else}}&mdash;{{end}}
                     </td>
                 </tr>
                 {{end}}
             </tbody>
         </table>
     </div>
-    {{else}}
-    <div class="bg-white shadow rounded-lg p-8 text-center">
-        <span class="text-2xl font-semibold text-gray-500">No audit entries</span>
-        <h3 class="mt-4 text-lg font-medium text-gray-900">No audit entries yet</h3>
-        <p class="mt-2 text-sm text-gray-500">Audit logs will appear here as actions are taken.</p>
-    </div>
-    {{end}}
 </div>
+{{else}}
+<div class="empty-state animate-fade-in">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <h3>No Audit Entries</h3>
+    <p>Audit logs will appear here as actions are taken in the system.</p>
+</div>
+{{end}}
 {{end}}
 
 {{template "layout" .}}
