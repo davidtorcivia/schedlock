@@ -77,11 +77,21 @@
 </div>
 
 <!-- Google OAuth Credentials -->
-<div class="card mb-8 animate-fade-in-scale" style="animation-delay: 25ms;">
-    <div class="card-header">
-        <h3>Google OAuth Credentials</h3>
-        <p>Configure your Google Cloud OAuth credentials</p>
-    </div>
+<!-- Google OAuth Credentials - Collapsible when connected -->
+<details class="card mb-8 animate-fade-in-scale" style="animation-delay: 25ms;" {{if not .OAuthConnected}}open{{end}}>
+    <summary class="card-header" style="cursor: pointer; list-style: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h3>Google OAuth Credentials</h3>
+                <p>Configure your Google Cloud OAuth credentials</p>
+            </div>
+            {{if .OAuthConnected}}
+            <span class="badge badge-success" style="background: var(--success-100); color: var(--success-700); padding: var(--space-1) var(--space-2); border-radius: 4px; font-size: var(--text-xs);">
+                Connected
+            </span>
+            {{end}}
+        </div>
+    </summary>
     <div class="card-body">
         <form action="/settings/google-oauth" method="POST">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -109,15 +119,24 @@
                     <li>Enable the <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener" style="color: var(--accent);">Google Calendar API</a></li>
                     <li>Configure the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener" style="color: var(--accent);">OAuth consent screen</a>:
                         <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
-                            <li>User Type: External</li>
-                            <li>Add scope: <code>https://www.googleapis.com/auth/calendar.events</code></li>
-                            <li>Add yourself as a test user</li>
+                            <li>User Type: <strong>External</strong></li>
+                            <li>Fill in required fields (App name, User support email, Developer email)</li>
+                            <li>On the "Scopes" page, click <strong>Add or Remove Scopes</strong>, search for <code>calendar.events</code>, check the box, and click Update</li>
                         </ul>
                     </li>
-                    <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color: var(--accent);">Credentials</a> → Create Credentials → OAuth client ID</li>
+                    <li><strong>Add yourself as a test user</strong> (required while app is in "Testing" status):
+                        <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
+                            <li>On the "Test users" page, click <strong>+ ADD USERS</strong></li>
+                            <li>Enter your Google email address (the one you'll use to connect)</li>
+                            <li>Click <strong>Add</strong>, then <strong>Save and Continue</strong></li>
+                        </ul>
+                    </li>
+                    <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color: var(--accent);">Credentials</a> → <strong>Create Credentials</strong> → <strong>OAuth client ID</strong></li>
                     <li>Application type: <strong>Web application</strong></li>
-                    <li>Under "Authorized redirect URIs", click <strong>ADD URI</strong> and paste the redirect URI shown above</li>
-                    <li>Click Create, then copy the Client ID and Client Secret below</li>
+                    <li>Under "Authorized redirect URIs", click <strong>+ ADD URI</strong> and paste:<br>
+                        <code style="background: var(--bg-secondary); padding: 2px 6px; border-radius: 4px;">{{.BaseURL}}/oauth/callback</code>
+                    </li>
+                    <li>Click <strong>Create</strong>, then copy the Client ID and Client Secret below</li>
                 </ol>
             </details>
 
@@ -145,7 +164,7 @@
             </div>
         </form>
     </div>
-</div>
+</details>
 
 <!-- Notification Providers -->
 <div class="card mb-8 animate-fade-in-scale" style="animation-delay: 50ms;">
