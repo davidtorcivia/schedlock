@@ -79,7 +79,9 @@
                     </td>
                     <td style="text-align: right;">
                         <button type="button" class="btn btn-ghost btn-sm" style="color: var(--error-700);"
-                                onclick="openRevokeModal('{{.ID}}', '{{.Name}}', '{{$.CSRFToken}}')">Revoke</button>
+                                data-key-id="{{.ID}}"
+                                data-key-name="{{.Name}}"
+                                onclick="openRevokeModal(this)">Revoke</button>
                     </td>
                 </tr>
                 {{end}}
@@ -119,7 +121,7 @@
 </div>
 
 <!-- Revoke Confirmation Modal -->
-<div id="revoke-modal" class="modal-overlay" onclick="if(event.target === this) closeRevokeModal()">
+<div id="revoke-modal" class="modal-overlay" data-csrf="{{.CSRFToken}}" onclick="if(event.target === this) closeRevokeModal()">
     <div class="modal modal-danger">
         <div class="modal-header">
             <h3>Revoke API Key</h3>
@@ -139,11 +141,16 @@
 </div>
 
 <script>
-function openRevokeModal(keyId, keyName, csrfToken) {
+function openRevokeModal(btn) {
+    var keyId = btn.getAttribute('data-key-id');
+    var keyName = btn.getAttribute('data-key-name');
+    var modal = document.getElementById('revoke-modal');
+    var csrfToken = modal.getAttribute('data-csrf');
+
     document.getElementById('revoke-key-name').textContent = keyName;
     document.getElementById('revoke-form').action = '/apikeys/' + keyId + '/revoke';
     document.getElementById('revoke-csrf').value = csrfToken;
-    document.getElementById('revoke-modal').classList.add('active');
+    modal.classList.add('active');
 }
 
 function closeRevokeModal() {
