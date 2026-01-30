@@ -16,6 +16,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
+	"github.com/dtorcivia/schedlock/internal/notifications"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
@@ -24,7 +25,12 @@ type OAuthManager struct {
 	config    *oauth2.Config
 	db        *database.DB
 	encryptor *crypto.Encryptor
-	mu        sync.Mutex // Serialize token refresh
+	mu        sync.RWMutex // Serialize token refresh and credential updates
+
+	// For dynamic credential updates
+	credStore *notifications.CredentialsStore
+	baseURL   string
+	scopes    []string
 
 	// In-memory token cache
 	cachedToken *oauth2.Token
@@ -45,24 +51,96 @@ func NewOAuthManager(cfg *config.Config, db *database.DB, encryptor *crypto.Encr
 		config:    oauthConfig,
 		db:        db,
 		encryptor: encryptor,
+		baseURL:   cfg.Server.BaseURL,
+		scopes:    cfg.Google.Scopes,
 	}
+}
+
+// SetCredentialStore sets the credential store for dynamic credential loading.
+func (m *OAuthManager) SetCredentialStore(store *notifications.CredentialsStore) {
+	m.credStore = store
+}
+
+// UpdateCredentials updates OAuth credentials and rebuilds the config.
+func (m *OAuthManager) UpdateCredentials(clientID, clientSecret string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	redirectURL := m.baseURL + "/oauth/callback"
+	if m.config != nil && m.config.RedirectURL != "" {
+		redirectURL = m.config.RedirectURL
+	}
+
+	m.config = &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       m.scopes,
+		Endpoint:     google.Endpoint,
+	}
+
+	// Clear cached token since credentials changed
+	m.cachedToken = nil
+	m.cacheExpiry = time.Time{}
+}
+
+// loadCredentialsFromDB attempts to load credentials from the database.
+func (m *OAuthManager) loadCredentialsFromDB() error {
+	if m.credStore == nil {
+		return fmt.Errorf("no credential store configured")
+	}
+
+	ctx := context.Background()
+	creds, err := m.credStore.Load(ctx, "google_oauth")
+	if err != nil || creds == nil || creds.Credentials == nil {
+		return fmt.Errorf("no credentials found")
+	}
+
+	oauthCreds, ok := creds.Credentials.(*notifications.GoogleOAuthCredentials)
+	if !ok || oauthCreds.ClientID == "" {
+		return fmt.Errorf("invalid credentials")
+	}
+
+	m.UpdateCredentials(oauthCreds.ClientID, oauthCreds.ClientSecret)
+	return nil
 }
 
 // IsConfigured checks if Google OAuth is configured.
 func (m *OAuthManager) IsConfigured() bool {
-	return m.config.ClientID != "" && m.config.ClientSecret != ""
+	m.mu.RLock()
+	configured := m.config != nil && m.config.ClientID != "" && m.config.ClientSecret != ""
+	m.mu.RUnlock()
+
+	if configured {
+		return true
+	}
+
+	// Try loading from DB
+	if m.credStore != nil {
+		if err := m.loadCredentialsFromDB(); err == nil {
+			m.mu.RLock()
+			configured = m.config != nil && m.config.ClientID != "" && m.config.ClientSecret != ""
+			m.mu.RUnlock()
+		}
+	}
+	return configured
 }
 
 // GetAuthURL returns the OAuth authorization URL.
 // For headless servers, the user should visit this URL in their browser.
 func (m *OAuthManager) GetAuthURL(state string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 }
 
 // GetAuthURLForHeadless returns authorization info for headless server setup.
 // Returns the URL and instructions for manual code entry.
 func (m *OAuthManager) GetAuthURLForHeadless(state string) HeadlessAuthInfo {
+	m.mu.RLock()
 	url := m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	redirectURL := m.config.RedirectURL
+	m.mu.RUnlock()
 
 	return HeadlessAuthInfo{
 		AuthURL: url,
@@ -83,7 +161,7 @@ func (m *OAuthManager) GetAuthURLForHeadless(state string) HeadlessAuthInfo {
 5. Return to the SchedLock web UI and paste the code in the authorization field.
 
 Note: The authorization code expires after a few minutes, so complete this process promptly.
-`, url, m.config.RedirectURL, state),
+`, url, redirectURL, state),
 	}
 }
 

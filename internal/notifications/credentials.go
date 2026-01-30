@@ -49,6 +49,12 @@ type TelegramCredentials struct {
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 }
 
+// GoogleOAuthCredentials holds Google OAuth client credentials.
+type GoogleOAuthCredentials struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
 // ProviderCredentials holds the enabled state and credentials for a provider.
 type ProviderCredentials struct {
 	Provider    string
@@ -134,6 +140,12 @@ func (s *CredentialsStore) Load(ctx context.Context, provider string) (*Provider
 			return nil, fmt.Errorf("failed to unmarshal telegram credentials: %w", err)
 		}
 		result.Credentials = &creds
+	case "google_oauth":
+		var creds GoogleOAuthCredentials
+		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal google_oauth credentials: %w", err)
+		}
+		result.Credentials = &creds
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -185,6 +197,11 @@ func (s *CredentialsStore) LoadAll(ctx context.Context) (map[string]*ProviderCre
 				}
 			case "telegram":
 				var creds TelegramCredentials
+				if json.Unmarshal([]byte(decrypted), &creds) == nil {
+					pc.Credentials = &creds
+				}
+			case "google_oauth":
+				var creds GoogleOAuthCredentials
 				if json.Unmarshal([]byte(decrypted), &creds) == nil {
 					pc.Credentials = &creds
 				}

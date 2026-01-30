@@ -42,6 +42,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	protected.HandleFunc("POST /settings/test-notification", h.TestNotification)
 	protected.HandleFunc("POST /settings/save", h.SaveSettings)
 	protected.HandleFunc("POST /settings/notifications", h.SaveNotificationSettings)
+	protected.HandleFunc("POST /settings/google-oauth", h.SaveGoogleOAuthSettings)
 	protected.HandleFunc("GET /oauth/start", h.OAuthStart)
 
 	// Apply session middleware to protected routes

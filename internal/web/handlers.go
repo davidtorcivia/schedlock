@@ -544,11 +544,16 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 	oauthConnected := h.oauthMgr.IsAuthenticated()
 	updated := r.URL.Query().Get("updated") == "1"
 	notificationsUpdated := r.URL.Query().Get("notifications_updated") == "1"
+	oauthUpdated := r.URL.Query().Get("oauth_updated") == "1"
 
 	// Load notification credentials from database
 	ntfyConfig := NotificationConfigView{Server: "https://ntfy.sh", Priority: "high"}
 	pushoverConfig := NotificationConfigView{Priority: 1, Sound: "pushover"}
 	telegramConfig := NotificationConfigView{}
+
+	// Load Google OAuth credentials
+	googleOAuthClientID := ""
+	googleOAuthConfigured := false
 
 	if h.credentialsStore != nil {
 		if creds, _ := h.credentialsStore.Load(ctx, "ntfy"); creds != nil {
@@ -577,6 +582,18 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 				telegramConfig.WebhookSecret = tc.WebhookSecret
 			}
 		}
+		// Load Google OAuth credentials
+		if creds, _ := h.credentialsStore.Load(ctx, "google_oauth"); creds != nil {
+			if gc, ok := creds.Credentials.(*notifications.GoogleOAuthCredentials); ok && gc != nil {
+				googleOAuthClientID = gc.ClientID
+				googleOAuthConfigured = gc.ClientID != ""
+			}
+		}
+	}
+	// Fall back to config for Google OAuth
+	if !googleOAuthConfigured && h.config.Google.ClientID != "" {
+		googleOAuthClientID = h.config.Google.ClientID
+		googleOAuthConfigured = true
 	}
 
 	// Fall back to env config if no DB config
@@ -602,16 +619,19 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "settings.html", map[string]interface{}{
-		"Title":                "Settings",
-		"Providers":            providers,
-		"OAuthConnected":       oauthConnected,
-		"OAuthConfigured":      h.oauthMgr.IsConfigured(),
-		"Config":               h.config,
-		"Updated":              updated,
-		"NotificationsUpdated": notificationsUpdated,
-		"NtfyConfig":           ntfyConfig,
-		"PushoverConfig":       pushoverConfig,
-		"TelegramConfig":       telegramConfig,
+		"Title":                 "Settings",
+		"Providers":             providers,
+		"OAuthConnected":        oauthConnected,
+		"OAuthConfigured":       h.oauthMgr.IsConfigured(),
+		"Config":                h.config,
+		"Updated":               updated,
+		"NotificationsUpdated":  notificationsUpdated,
+		"OAuthUpdated":          oauthUpdated,
+		"NtfyConfig":            ntfyConfig,
+		"PushoverConfig":        pushoverConfig,
+		"TelegramConfig":        telegramConfig,
+		"GoogleOAuthClientID":   googleOAuthClientID,
+		"GoogleOAuthConfigured": googleOAuthConfigured,
 	})
 }
 
@@ -701,6 +721,58 @@ func (h *Handler) SaveNotificationSettings(w http.ResponseWriter, r *http.Reques
 	}
 
 	http.Redirect(w, r, "/settings?notifications_updated=1", http.StatusSeeOther)
+}
+
+// SaveGoogleOAuthSettings saves Google OAuth credentials.
+func (h *Handler) SaveGoogleOAuthSettings(w http.ResponseWriter, r *http.Request) {
+	if h.credentialsStore == nil {
+		http.Error(w, "credentials store unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	clientID := strings.TrimSpace(r.FormValue("google_client_id"))
+	clientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
+
+	// If secret empty and ID provided, keep existing secret
+	if clientSecret == "" && clientID != "" {
+		if existing, _ := h.credentialsStore.Load(ctx, "google_oauth"); existing != nil {
+			if gc, ok := existing.Credentials.(*notifications.GoogleOAuthCredentials); ok && gc != nil {
+				clientSecret = gc.ClientSecret
+			}
+		}
+	}
+
+	// Validation: both or neither
+	if (clientID == "") != (clientSecret == "") {
+		h.renderSettingsError(w, r, "Both Client ID and Client Secret are required")
+		return
+	}
+
+	// Save to DB (encrypted)
+	creds := &notifications.GoogleOAuthCredentials{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	}
+
+	if err := h.credentialsStore.Save(ctx, "google_oauth", clientID != "", creds); err != nil {
+		h.renderSettingsError(w, r, "Failed to save credentials: "+err.Error())
+		return
+	}
+
+	// Update OAuthManager immediately (no restart needed!)
+	if clientID != "" {
+		h.oauthMgr.UpdateCredentials(clientID, clientSecret)
+	}
+
+	// Audit log (don't log actual credentials)
+	if h.auditLogger != nil {
+		h.auditLogger.Log(ctx, database.AuditSettingsChanged, "", "", "web:admin",
+			map[string]interface{}{"google_oauth_updated": true, "configured": clientID != ""})
+	}
+
+	http.Redirect(w, r, "/settings?oauth_updated=1", http.StatusSeeOther)
 }
 
 // SaveSettings handles runtime settings updates from the web UI.

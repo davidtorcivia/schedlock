@@ -19,6 +19,11 @@
     Notification settings updated successfully.
 </div>
 {{end}}
+{{if .OAuthUpdated}}
+<div class="alert alert-success">
+    Google OAuth credentials updated successfully.
+</div>
+{{end}}
 
 <!-- Google Calendar Connection -->
 <div class="card mb-8 animate-fade-in-scale">
@@ -33,17 +38,9 @@
             <strong>Setup Required:</strong> Google OAuth credentials are not configured.
         </div>
         <p class="text-sm" style="color: var(--text-secondary); margin-bottom: var(--space-4);">
-            To connect Google Calendar, you need to configure OAuth credentials.
-            Add <code>SCHEDLOCK_GOOGLE_CLIENT_ID</code> and <code>SCHEDLOCK_GOOGLE_CLIENT_SECRET</code>
-            environment variables, or add them to your config.yaml file.
+            To connect Google Calendar, configure your OAuth credentials in the
+            <strong>Google OAuth Credentials</strong> section below.
         </p>
-        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener"
-           class="btn btn-secondary">
-            Open Google Cloud Console
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px; margin-left: var(--space-2);">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-            </svg>
-        </a>
         {{else}}
         <!-- OAuth configured - show connection status -->
         <div class="flex items-center justify-between" style="flex-wrap: wrap; gap: var(--space-4);">
@@ -76,6 +73,62 @@
             {{end}}
         </div>
         {{end}}
+    </div>
+</div>
+
+<!-- Google OAuth Credentials -->
+<div class="card mb-8 animate-fade-in-scale" style="animation-delay: 25ms;">
+    <div class="card-header">
+        <h3>Google OAuth Credentials</h3>
+        <p>Configure your Google Cloud OAuth credentials</p>
+    </div>
+    <div class="card-body">
+        <form action="/settings/google-oauth" method="POST">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            {{if .GoogleOAuthConfigured}}
+            <div class="alert alert-info mb-4">
+                <strong>Credentials configured.</strong> Update below to change them.
+            </div>
+            {{end}}
+
+            <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+                    How to get OAuth credentials
+                </summary>
+                <ol style="margin-top: var(--space-3); padding-left: var(--space-5); color: var(--text-tertiary); line-height: 1.7;">
+                    <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener" style="color: var(--accent);">Google Cloud Console</a> and create/select a project</li>
+                    <li>Enable the <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener" style="color: var(--accent);">Google Calendar API</a></li>
+                    <li>Set up the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener" style="color: var(--accent);">OAuth consent screen</a> (External, add calendar.events scope, add yourself as test user)</li>
+                    <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color: var(--accent);">Credentials</a> → Create OAuth client ID (Web application)</li>
+                    <li>Add redirect URI: <code style="background: var(--bg-secondary); padding: 2px 6px; border-radius: 4px;">{{.Config.Server.BaseURL}}/oauth/callback</code></li>
+                    <li>Copy the Client ID and Client Secret below</li>
+                </ol>
+            </details>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Client ID</label>
+                    <input type="text" name="google_client_id"
+                           value="{{.GoogleOAuthClientID}}"
+                           class="form-input"
+                           placeholder="xxxxx.apps.googleusercontent.com">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Client Secret</label>
+                    <input type="password" name="google_client_secret"
+                           class="form-input"
+                           placeholder="{{if .GoogleOAuthConfigured}}(leave empty to keep existing){{else}}GOCSPX-...{{end}}">
+                    {{if .GoogleOAuthConfigured}}
+                    <p class="form-hint">Leave empty to keep existing secret</p>
+                    {{end}}
+                </div>
+            </div>
+
+            <div class="flex justify-end">
+                <button type="submit" class="btn btn-primary">Save OAuth Credentials</button>
+            </div>
+        </form>
     </div>
 </div>
 

@@ -104,6 +104,9 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 		return nil, err
 	}
 
+	// Wire credential store to OAuth manager for dynamic credential updates
+	oauthMgr.SetCredentialStore(credentialsStore)
+
 	// Initialize notification manager
 	notificationMgr := notifications.NewManager(db, cfg)
 
