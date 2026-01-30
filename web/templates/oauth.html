@@ -11,7 +11,7 @@
     </div>
     {{end}}
 
-    <div class="card">
+    <div class="card animate-fade-in-scale">
         <div class="card-body">
             <div class="steps">
                 <!-- Step 1 -->
@@ -73,7 +73,7 @@
 
             {{if .Instructions}}
             <div class="mt-8 pt-6 border-t">
-                <h4 style="font-family: var(--font-serif); margin-bottom: var(--space-3);">Additional Instructions</h4>
+                <h4 style="font-family: var(--font-serif); margin-bottom: var(--space-3); font-weight: 500;">Additional Instructions</h4>
                 <div class="text-sm" style="color: var(--text-secondary);">
                     {{range .Instructions}}
                     <p>{{.}}</p>

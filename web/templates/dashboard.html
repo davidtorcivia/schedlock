@@ -57,29 +57,29 @@
 
 <!-- Pending Requests -->
 {{if .PendingRequests}}
-<div class="card">
+<div class="card animate-fade-in-scale">
     <div class="card-header">
         <h3>Pending Approvals</h3>
         <p>Calendar operations awaiting your review</p>
     </div>
-    <div class="list-group" style="border: none; border-top: 1px solid var(--border-subtle);">
+    <div class="list-group" style="border: none; border-top: 1px solid var(--border-subtle); border-radius: 0;">
         {{range .PendingRequests}}
         <div class="list-item">
             <div class="list-item-content">
-                <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-1); flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); flex-wrap: wrap;">
                     <span class="badge badge-primary">{{.Operation}}</span>
                     <span class="badge badge-default">{{.Status}}</span>
                 </div>
                 <div class="list-item-meta">
-                    Created {{formatTime .CreatedAt}} · Expires {{formatTime .ExpiresAt}}
+                    Created {{formatTime .CreatedAt}} &middot; Expires {{formatTime .ExpiresAt}}
                 </div>
             </div>
             <div class="list-item-actions">
-                <form action="/requests/{{.ID}}/approve" method="POST" class="inline" style="display: inline;">
+                <form action="/requests/{{.ID}}/approve" method="POST" style="display: inline;">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button type="submit" class="btn btn-success btn-sm">Approve</button>
                 </form>
-                <form action="/requests/{{.ID}}/deny" method="POST" class="inline" style="display: inline;">
+                <form action="/requests/{{.ID}}/deny" method="POST" style="display: inline;">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button type="submit" class="btn btn-danger btn-sm">Deny</button>
                 </form>
@@ -90,7 +90,7 @@
     </div>
 </div>
 {{else}}
-<div class="empty-state">
+<div class="empty-state animate-fade-in">
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>

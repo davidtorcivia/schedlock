@@ -5,7 +5,7 @@
 </div>
 
 {{if .Entries}}
-<div class="card">
+<div class="card animate-fade-in-scale">
     <div class="table-container">
         <table class="table">
             <thead>
@@ -28,12 +28,12 @@
                         {{if .RequestID.Valid}}
                         <a href="/requests/{{.RequestID.String}}">{{.RequestID.String}}</a>
                         {{else}}
-                        <span style="color: var(--text-muted);">—</span>
+                        <span style="color: var(--text-muted);">&mdash;</span>
                         {{end}}
                     </td>
                     <td style="color: var(--text-primary); font-weight: 500;">{{.Actor}}</td>
                     <td class="font-mono" style="font-size: var(--text-xs);">
-                        {{if .IPAddress.Valid}}{{.IPAddress.String}}{{else}}—{{end}}
+                        {{if .IPAddress.Valid}}{{.IPAddress.String}}{{else}}&mdash;{{end}}
                     </td>
                 </tr>
                 {{end}}
@@ -42,7 +42,7 @@
     </div>
 </div>
 {{else}}
-<div class="empty-state">
+<div class="empty-state animate-fade-in">
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>

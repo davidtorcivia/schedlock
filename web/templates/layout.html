@@ -7,7 +7,7 @@
     <title>{{.Title}} - SchedLock</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/styles.css">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 </head>
@@ -15,7 +15,7 @@
     {{if .Session}}
     <header class="app-header">
         <div class="container">
-            <a href="/" class="app-brand">Sched<span>Lock</span></a>
+            <a href="/" class="app-brand">SchedLock</a>
             
             <nav class="app-nav">
                 <a href="/" class="nav-link {{if eq .Title "Dashboard"}}active{{end}}">Dashboard</a>
@@ -25,7 +25,7 @@
                 <a href="/settings" class="nav-link {{if eq .Title "Settings"}}active{{end}}">Settings</a>
             </nav>
             
-            <div style="display: flex; align-items: center; gap: var(--space-4);">
+            <div style="display: flex; align-items: center; gap: var(--space-3);">
                 <!-- Theme Toggle -->
                 <div class="theme-toggle">
                     <button type="button" data-theme-value="light" title="Light theme">
@@ -125,6 +125,18 @@
                 closeIcon.style.display = 'none';
             }
         }
+        
+        // Close mobile menu when clicking outside
+        document.addEventListener('click', function(e) {
+            const mobileNav = document.getElementById('mobileNav');
+            const menuBtn = document.querySelector('.mobile-menu-btn');
+            
+            if (mobileNav.classList.contains('open') && 
+                !mobileNav.contains(e.target) && 
+                !menuBtn.contains(e.target)) {
+                toggleMobileMenu();
+            }
+        });
         
         // HTMX CSRF setup
         document.body.addEventListener('htmx:configRequest', function(evt) {

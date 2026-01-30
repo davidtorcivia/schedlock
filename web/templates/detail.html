@@ -8,12 +8,12 @@
     </a>
 </div>
 
-<div class="card mb-8">
+<div class="card mb-8 animate-fade-in-scale">
     <div class="card-header">
         <div class="flex items-center justify-between" style="flex-wrap: wrap; gap: var(--space-3);">
             <div>
                 <h2>Request Details</h2>
-                <p class="font-mono text-sm">{{.Request.ID}}</p>
+                <p class="font-mono text-sm" style="margin-top: var(--space-1); color: var(--text-tertiary);">{{.Request.ID}}</p>
             </div>
             <span class="badge 
                 {{if eq .Request.Status "pending_approval"}}badge-primary
@@ -82,7 +82,7 @@
         {{if .Request.Result}}
         <div>
             <h5 style="margin-bottom: var(--space-3);">Result</h5>
-            <pre style="background-color: var(--color-success-50); border-color: var(--color-success-600);">{{formatJSON .Request.Result}}</pre>
+            <pre style="background-color: var(--success-50); border-color: rgba(21, 128, 61, 0.2);">{{formatJSON .Request.Result}}</pre>
         </div>
         {{end}}
     </div>
@@ -124,12 +124,12 @@
 
 <!-- Audit Log -->
 {{if .AuditEntries}}
-<div class="card">
+<div class="card animate-fade-in-scale" style="animation-delay: 100ms;">
     <div class="card-header">
         <h3>Audit Log</h3>
         <p>Activity history for this request</p>
     </div>
-    <div class="list-group" style="border: none; border-top: 1px solid var(--border-subtle);">
+    <div class="list-group" style="border: none; border-top: 1px solid var(--border-subtle); border-radius: 0;">
         {{range .AuditEntries}}
         <div class="list-item">
             <div>

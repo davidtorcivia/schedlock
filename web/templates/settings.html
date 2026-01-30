@@ -21,7 +21,7 @@
 {{end}}
 
 <!-- Google Calendar Connection -->
-<div class="card mb-8">
+<div class="card mb-8 animate-fade-in-scale">
     <div class="card-header">
         <h3>Google Calendar</h3>
         <p>Connect your Google Calendar account</p>
@@ -32,21 +32,17 @@
                 <p style="font-weight: 500; color: var(--text-primary); margin-bottom: var(--space-1);">
                     {{if .OAuthConnected}}
                     <span style="display: inline-flex; align-items: center; gap: var(--space-2);">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 20px; height: 20px; color: var(--color-success-600);">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
+                        <span class="status-dot status-dot-success"></span>
                         Connected
                     </span>
                     {{else}}
                     <span style="display: inline-flex; align-items: center; gap: var(--space-2);">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 20px; height: 20px; color: var(--text-muted);">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                        </svg>
+                        <span class="status-dot status-dot-error"></span>
                         Not Connected
                     </span>
                     {{end}}
                 </p>
-                <p class="text-sm" style="margin: 0;">
+                <p class="text-sm" style="margin: 0; color: var(--text-secondary);">
                     {{if .OAuthConnected}}
                     Your Google Calendar is configured and ready for operations.
                     {{else}}
@@ -64,7 +60,7 @@
 </div>
 
 <!-- Notification Providers -->
-<div class="card mb-8">
+<div class="card mb-8 animate-fade-in-scale" style="animation-delay: 50ms;">
     <div class="card-header">
         <h3>Notification Providers</h3>
         <p>Configure how you receive approval notifications</p>
@@ -74,11 +70,11 @@
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
             <!-- ntfy -->
-            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-3">
-                        <h5 style="margin: 0;">ntfy</h5>
-                        <span class="text-sm" style="color: var(--text-muted);">Push notifications via ntfy.sh</span>
+            <div class="provider-card">
+                <div class="provider-header">
+                    <div class="provider-title">
+                        <h5>ntfy</h5>
+                        <span class="provider-desc">Push notifications via ntfy.sh</span>
                     </div>
                     <div class="form-check" style="margin: 0;">
                         <input type="checkbox" id="ntfy_enabled" name="ntfy_enabled" class="form-check-input"
@@ -95,7 +91,7 @@
                                    class="form-input" placeholder="https://ntfy.sh">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Topic <span style="color: var(--color-error-500);">*</span></label>
+                            <label class="form-label">Topic <span style="color: var(--error-700);">*</span></label>
                             <input type="text" name="ntfy_topic" value="{{.NtfyConfig.Topic}}"
                                    class="form-input" placeholder="your-topic-name">
                         </div>
@@ -127,11 +123,11 @@
             </div>
 
             <!-- Pushover -->
-            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-3">
-                        <h5 style="margin: 0;">Pushover</h5>
-                        <span class="text-sm" style="color: var(--text-muted);">iOS/Android push notifications</span>
+            <div class="provider-card">
+                <div class="provider-header">
+                    <div class="provider-title">
+                        <h5>Pushover</h5>
+                        <span class="provider-desc">iOS/Android push notifications</span>
                     </div>
                     <div class="form-check" style="margin: 0;">
                         <input type="checkbox" id="pushover_enabled" name="pushover_enabled" class="form-check-input"
@@ -143,13 +139,13 @@
                 <div id="pushover_fields" style="{{if not .PushoverConfig.Enabled}}display: none;{{end}}">
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Application Token <span style="color: var(--color-error-500);">*</span></label>
+                            <label class="form-label">Application Token <span style="color: var(--error-700);">*</span></label>
                             <input type="password" name="pushover_app_token" value="{{.PushoverConfig.AppToken}}"
                                    class="form-input" placeholder="a...">
                             <p class="form-hint">From pushover.net/apps</p>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">User Key <span style="color: var(--color-error-500);">*</span></label>
+                            <label class="form-label">User Key <span style="color: var(--error-700);">*</span></label>
                             <input type="password" name="pushover_user_key" value="{{.PushoverConfig.UserKey}}"
                                    class="form-input" placeholder="u...">
                             <p class="form-hint">Your Pushover user key</p>
@@ -180,11 +176,11 @@
             </div>
 
             <!-- Telegram -->
-            <div class="mb-6 p-4" style="background-color: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-3">
-                        <h5 style="margin: 0;">Telegram</h5>
-                        <span class="text-sm" style="color: var(--text-muted);">Telegram bot notifications</span>
+            <div class="provider-card">
+                <div class="provider-header">
+                    <div class="provider-title">
+                        <h5>Telegram</h5>
+                        <span class="provider-desc">Telegram bot notifications</span>
                     </div>
                     <div class="form-check" style="margin: 0;">
                         <input type="checkbox" id="telegram_enabled" name="telegram_enabled" class="form-check-input"
@@ -196,13 +192,13 @@
                 <div id="telegram_fields" style="{{if not .TelegramConfig.Enabled}}display: none;{{end}}">
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Bot Token <span style="color: var(--color-error-500);">*</span></label>
+                            <label class="form-label">Bot Token <span style="color: var(--error-700);">*</span></label>
                             <input type="password" name="telegram_bot_token" value="{{.TelegramConfig.BotToken}}"
                                    class="form-input" placeholder="123456:ABC...">
                             <p class="form-hint">From @BotFather</p>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Chat ID <span style="color: var(--color-error-500);">*</span></label>
+                            <label class="form-label">Chat ID <span style="color: var(--error-700);">*</span></label>
                             <input type="text" name="telegram_chat_id" value="{{.TelegramConfig.ChatID}}"
                                    class="form-input" placeholder="-100...">
                             <p class="form-hint">User or group chat ID</p>
@@ -255,7 +251,7 @@ function testProvider(provider) {
 </script>
 
 <!-- Runtime Settings -->
-<div class="card mb-8">
+<div class="card mb-8 animate-fade-in-scale" style="animation-delay: 100ms;">
     <div class="card-header">
         <h3>Runtime Settings</h3>
         <p>Configure approval workflow and system behavior</p>
@@ -338,7 +334,7 @@ function testProvider(provider) {
 
             <div class="mb-8">
                 <h5 style="margin-bottom: var(--space-4);">Display</h5>
-                <div class="form-row">
+                <div class="form-row three-col">
                     <div class="form-group">
                         <label class="form-label">Timezone</label>
                         <input type="text" name="display_timezone" value="{{.Config.Display.Timezone}}"
@@ -365,7 +361,7 @@ function testProvider(provider) {
 </div>
 
 <!-- Configuration Info -->
-<div class="card">
+<div class="card animate-fade-in-scale" style="animation-delay: 150ms;">
     <div class="card-header">
         <h3>Current Configuration</h3>
         <p>Read-only system configuration values</p>
