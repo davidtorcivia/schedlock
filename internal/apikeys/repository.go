@@ -65,8 +65,8 @@ func (r *Repository) Create(ctx context.Context, name, tier string, constraints 
 
 	// Insert into database
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, key_hash, key_prefix, name, tier, constraints)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO api_keys (id, key_hash, key_prefix, name, tier, constraints, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
 	`, keyID, keyHash, keyPrefix, name, tier, constraintsJSON)
 
 	if err != nil {
@@ -158,7 +158,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 		name              string
 		tier              string
 		constraintsJSON   sql.NullString
-		createdAt         time.Time
+		createdAtStr      sql.NullString
 		lastUsedAt        sql.NullTime
 		expiresAt         sql.NullTime
 		revokedAt         sql.NullTime
@@ -172,7 +172,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 		WHERE id = ?
 	`, id).Scan(
 		&keyHash, &keyPrefix, &name, &tier, &constraintsJSON,
-		&createdAt, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
+		&createdAtStr, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
 	)
 
 	if err == sql.ErrNoRows {
@@ -187,6 +187,12 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 	if constraintsJSON.Valid && constraintsJSON.String != "" {
 		constraints = &database.KeyConstraints{}
 		json.Unmarshal([]byte(constraintsJSON.String), constraints)
+	}
+
+	// Parse created_at timestamp
+	var createdAt time.Time
+	if createdAtStr.Valid && createdAtStr.String != "" {
+		createdAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr.String)
 	}
 
 	return &database.APIKey{
@@ -231,7 +237,7 @@ func (r *Repository) List(ctx context.Context, includeRevoked bool) ([]database.
 			name              string
 			tier              string
 			constraintsJSON   sql.NullString
-			createdAt         time.Time
+			createdAtStr      sql.NullString
 			lastUsedAt        sql.NullTime
 			expiresAt         sql.NullTime
 			revokedAt         sql.NullTime
@@ -240,7 +246,7 @@ func (r *Repository) List(ctx context.Context, includeRevoked bool) ([]database.
 
 		if err := rows.Scan(
 			&id, &keyHash, &keyPrefix, &name, &tier, &constraintsJSON,
-			&createdAt, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
+			&createdAtStr, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
 		); err != nil {
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
@@ -249,6 +255,12 @@ func (r *Repository) List(ctx context.Context, includeRevoked bool) ([]database.
 		if constraintsJSON.Valid && constraintsJSON.String != "" {
 			constraints = &database.KeyConstraints{}
 			json.Unmarshal([]byte(constraintsJSON.String), constraints)
+		}
+
+		// Parse created_at timestamp
+		var createdAt time.Time
+		if createdAtStr.Valid && createdAtStr.String != "" {
+			createdAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr.String)
 		}
 
 		keys = append(keys, database.APIKey{
