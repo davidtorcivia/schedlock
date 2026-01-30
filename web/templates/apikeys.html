@@ -78,11 +78,8 @@
                         {{if .LastUsedAt.Valid}}{{formatDate .LastUsedAt.Time}}{{else}}<span style="color: var(--text-muted);">Never</span>{{end}}
                     </td>
                     <td style="text-align: right;">
-                        <form action="/apikeys/{{.ID}}/revoke" method="POST" style="display: inline;"
-                              onsubmit="return confirm('Are you sure you want to revoke this API key? This action cannot be undone.');">
-                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                            <button type="submit" class="btn btn-ghost btn-sm" style="color: var(--error-700);">Revoke</button>
-                        </form>
+                        <button type="button" class="btn btn-ghost btn-sm" style="color: var(--error-700);"
+                                onclick="openRevokeModal('{{.ID}}', '{{.Name}}', '{{$.CSRFToken}}')">Revoke</button>
                     </td>
                 </tr>
                 {{end}}
@@ -120,6 +117,44 @@
         </dl>
     </div>
 </div>
+
+<!-- Revoke Confirmation Modal -->
+<div id="revoke-modal" class="modal-overlay" onclick="if(event.target === this) closeRevokeModal()">
+    <div class="modal modal-danger">
+        <div class="modal-header">
+            <h3>Revoke API Key</h3>
+        </div>
+        <div class="modal-body">
+            <p>Are you sure you want to revoke <strong id="revoke-key-name"></strong>?</p>
+            <p style="margin-top: var(--space-3); color: var(--text-tertiary);">This action cannot be undone. Any applications using this key will lose access immediately.</p>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-ghost" onclick="closeRevokeModal()">Cancel</button>
+            <form id="revoke-form" method="POST" style="margin: 0;">
+                <input type="hidden" name="csrf_token" id="revoke-csrf">
+                <button type="submit" class="btn btn-danger">Revoke Key</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openRevokeModal(keyId, keyName, csrfToken) {
+    document.getElementById('revoke-key-name').textContent = keyName;
+    document.getElementById('revoke-form').action = '/apikeys/' + keyId + '/revoke';
+    document.getElementById('revoke-csrf').value = csrfToken;
+    document.getElementById('revoke-modal').classList.add('active');
+}
+
+function closeRevokeModal() {
+    document.getElementById('revoke-modal').classList.remove('active');
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeRevokeModal();
+});
+</script>
 {{end}}
 
 {{template "layout" .}}

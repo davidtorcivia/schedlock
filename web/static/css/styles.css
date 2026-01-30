@@ -1495,6 +1495,89 @@ pre code {
 }
 
 /* --------------------------------------------------------------------------
+   Modal / Dialog
+   -------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.modal-overlay.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.modal {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  box-shadow: var(--shadow-xl);
+  max-width: 420px;
+  width: 90%;
+  transform: scale(0.95) translateY(-10px);
+  transition: transform 0.2s ease;
+}
+
+.modal-overlay.active .modal {
+  transform: scale(1) translateY(0);
+}
+
+.modal-header {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: var(--space-5) var(--space-6);
+}
+
+.modal-body p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.modal-footer {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+/* Danger modal variant */
+.modal-danger .modal-header {
+  background-color: var(--error-50);
+  border-bottom-color: rgba(185, 28, 28, 0.2);
+  border-radius: 12px 12px 0 0;
+}
+
+.modal-danger .modal-header h3 {
+  color: var(--error-900);
+}
+
+/* --------------------------------------------------------------------------
    Provider Cards (in settings)
    -------------------------------------------------------------------------- */
 
