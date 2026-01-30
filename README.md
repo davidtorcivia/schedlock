@@ -17,19 +17,46 @@ A Calendar Proxy service that provides human-in-the-loop approval for AI agent c
 ### Prerequisites
 
 - Docker and Docker Compose
-- Google Cloud project with Calendar API enabled
+- Google Cloud project with Calendar API enabled (optional, can configure later)
 - OAuth 2.0 credentials (for headless/desktop app)
 
 ### Setup
 
-1. **Clone and configure:**
+1. **Clone and start:**
    ```bash
    git clone https://github.com/dtorcivia/schedlock.git
    cd schedlock
-   cp .env.example .env
+   docker-compose up -d
    ```
 
-2. **Generate secrets:**
+2. **Complete the Setup Wizard:**
+   - Open `http://localhost:8080` in your browser
+   - On first run, the setup wizard will guide you through:
+     - Setting an admin password
+     - Configuring the server base URL
+     - (Optional) Setting up Google OAuth credentials
+   - The wizard will automatically generate encryption keys and save configuration
+
+3. **Restart after setup:**
+   ```bash
+   docker-compose restart
+   ```
+
+4. **Connect Google Calendar:**
+   - Log in with your admin password
+   - Go to Settings → Connect Google Calendar
+   - Follow the OAuth flow
+
+5. **Create an API key:**
+   - Go to API Keys in the web UI
+   - Create a "write" tier key for your AI agent
+
+### Manual Configuration (Advanced)
+
+If you prefer to configure manually instead of using the setup wizard:
+
+1. Copy `.env.example` to `.env`
+2. Generate secrets:
    ```bash
    # Generate server secret
    openssl rand -base64 32
@@ -37,33 +64,10 @@ A Calendar Proxy service that provides human-in-the-loop approval for AI agent c
    # Generate encryption key
    openssl rand -base64 32
 
-   # Generate password hash (run the binary)
+   # Generate password hash
    ./schedlock hash-password "YourPassword"
-
-   # Or use an Argon2id tool
-   # Format: $argon2id$v=19$m=65536,t=3,p=4$SALT$HASH
    ```
-
-3. **Configure `.env`** with your:
-   - Server secret
-   - Encryption key
-   - Password hash
-   - Google OAuth credentials
-   - Notification provider settings
-
-4. **Start the server:**
-   ```bash
-   docker-compose up -d
-   ```
-
-5. **Connect Google Calendar:**
-   - Open `http://localhost:8080/login`
-   - Go to Settings → Connect Google Calendar
-   - Follow the OAuth flow
-
-6. **Create an API key:**
-   - Go to API Keys in the web UI
-   - Create a "write" tier key for Moltbot
+3. Configure `.env` with your secrets, Google OAuth credentials, and notification settings
 
 ## API Usage
 

@@ -27,6 +27,25 @@
         <p>Connect your Google Calendar account</p>
     </div>
     <div class="card-body">
+        {{if not .OAuthConfigured}}
+        <!-- OAuth not configured -->
+        <div class="alert alert-warning mb-4">
+            <strong>Setup Required:</strong> Google OAuth credentials are not configured.
+        </div>
+        <p class="text-sm" style="color: var(--text-secondary); margin-bottom: var(--space-4);">
+            To connect Google Calendar, you need to configure OAuth credentials.
+            Add <code>SCHEDLOCK_GOOGLE_CLIENT_ID</code> and <code>SCHEDLOCK_GOOGLE_CLIENT_SECRET</code>
+            environment variables, or add them to your config.yaml file.
+        </p>
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener"
+           class="btn btn-secondary">
+            Open Google Cloud Console
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px; margin-left: var(--space-2);">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+        </a>
+        {{else}}
+        <!-- OAuth configured - show connection status -->
         <div class="flex items-center justify-between" style="flex-wrap: wrap; gap: var(--space-4);">
             <div>
                 <p style="font-weight: 500; color: var(--text-primary); margin-bottom: var(--space-1);">
@@ -56,6 +75,7 @@
             <a href="/oauth/start" class="btn btn-primary">Connect Google Calendar</a>
             {{end}}
         </div>
+        {{end}}
     </div>
 </div>
 
@@ -228,25 +248,59 @@
 </div>
 
 <script>
-function testProvider(provider) {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/settings/test-notification';
+// Toast notification system
+function showToast(message, type = 'info') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
 
-    const csrfInput = document.createElement('input');
-    csrfInput.type = 'hidden';
-    csrfInput.name = 'csrf_token';
-    csrfInput.value = '{{.CSRFToken}}';
-    form.appendChild(csrfInput);
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <span>${message}</span>
+        <button type="button" class="toast-close" onclick="this.parentElement.remove()">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px;">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        </button>
+    `;
+    container.appendChild(toast);
 
-    const providerInput = document.createElement('input');
-    providerInput.type = 'hidden';
-    providerInput.name = 'provider';
-    providerInput.value = provider;
-    form.appendChild(providerInput);
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        toast.classList.add('hiding');
+        setTimeout(() => toast.remove(), 200);
+    }, 5000);
+}
 
-    document.body.appendChild(form);
-    form.submit();
+async function testProvider(provider) {
+    const btn = event.target;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+
+    try {
+        const response = await fetch('/settings/test-notification', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': '{{.CSRFToken}}'
+            },
+            body: new URLSearchParams({ provider: provider, csrf_token: '{{.CSRFToken}}' })
+        });
+
+        const data = await response.json();
+        showToast(data.message, data.success ? 'success' : 'error');
+    } catch (err) {
+        showToast('Failed to send test notification: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
 }
 </script>
 

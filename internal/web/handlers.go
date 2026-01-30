@@ -154,6 +154,7 @@ func loadTemplates(dir string) (*template.Template, error) {
 	pageFiles := []string{
 		"login.html", "dashboard.html", "pending.html", "detail.html",
 		"history.html", "apikeys.html", "settings.html", "oauth.html",
+		"oauth_not_configured.html", "setup.html", "setup_complete.html",
 	}
 
 	for _, page := range pageFiles {
@@ -604,6 +605,7 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 		"Title":                "Settings",
 		"Providers":            providers,
 		"OAuthConnected":       oauthConnected,
+		"OAuthConfigured":      h.oauthMgr.IsConfigured(),
 		"Config":               h.config,
 		"Updated":              updated,
 		"NotificationsUpdated": notificationsUpdated,
@@ -859,16 +861,34 @@ func (h *Handler) TestNotification(w http.ResponseWriter, r *http.Request) {
 	provider := r.FormValue("provider")
 
 	ctx := r.Context()
+	w.Header().Set("Content-Type", "application/json")
+
 	if err := h.notificationMgr.TestProvider(ctx, provider); err != nil {
-		http.Error(w, "Test failed: "+err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Test failed: " + err.Error(),
+		})
 		return
 	}
 
-	w.Write([]byte("Test notification sent successfully"))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Test notification sent successfully to " + provider,
+	})
 }
 
 // OAuthStart initiates OAuth flow.
 func (h *Handler) OAuthStart(w http.ResponseWriter, r *http.Request) {
+	// Check if OAuth is configured
+	if !h.oauthMgr.IsConfigured() {
+		h.render(w, r, "oauth_not_configured.html", map[string]interface{}{
+			"Title":   "Google Calendar Setup Required",
+			"BaseURL": h.config.Server.BaseURL,
+		})
+		return
+	}
+
 	state, err := google.GenerateOAuthState()
 	if err != nil {
 		http.Error(w, "Failed to generate OAuth state", http.StatusInternalServerError)

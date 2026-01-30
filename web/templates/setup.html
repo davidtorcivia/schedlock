@@ -1,0 +1,118 @@
+{{define "content"}}
+<div class="login-page">
+    <div class="login-card animate-fade-in-scale" style="max-width: 520px;">
+        <div class="login-brand">
+            <h1>SchedLock</h1>
+            <p>Initial Setup</p>
+        </div>
+
+        {{if .Error}}
+        <div class="alert alert-error mb-6">
+            {{.Error}}
+        </div>
+        {{end}}
+
+        <form action="/setup" method="POST">
+            <!-- Step 1: Admin Password -->
+            <div class="mb-8">
+                <h3 style="font-family: var(--font-serif); margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-3);">
+                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: white; font-size: var(--text-sm); font-weight: 600;">1</span>
+                    Set Admin Password
+                </h3>
+                <div class="form-group">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" name="password" id="password" required
+                           class="form-input" minlength="8"
+                           placeholder="Minimum 8 characters">
+                </div>
+                <div class="form-group">
+                    <label for="confirm_password" class="form-label">Confirm Password</label>
+                    <input type="password" name="confirm_password" id="confirm_password" required
+                           class="form-input" minlength="8"
+                           placeholder="Re-enter your password">
+                </div>
+            </div>
+
+            <!-- Step 2: Base URL -->
+            <div class="mb-8">
+                <h3 style="font-family: var(--font-serif); margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-3);">
+                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: white; font-size: var(--text-sm); font-weight: 600;">2</span>
+                    Server Configuration
+                </h3>
+                <div class="form-group">
+                    <label for="base_url" class="form-label">Base URL</label>
+                    <input type="url" name="base_url" id="base_url"
+                           class="form-input"
+                           value="{{.BaseURL}}"
+                           placeholder="https://your-domain.com">
+                    <p class="form-hint">The public URL where SchedLock is accessible (e.g., https://schedlock.example.com)</p>
+                </div>
+            </div>
+
+            <!-- Step 3: Google OAuth (Optional) -->
+            <div class="mb-8">
+                <h3 style="font-family: var(--font-serif); margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-3);">
+                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--bg-tertiary); color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600;">3</span>
+                    Google Calendar
+                    <small style="color: var(--text-muted); font-weight: normal; font-size: var(--text-sm);">(Optional)</small>
+                </h3>
+                <p class="text-sm mb-4" style="color: var(--text-secondary);">
+                    To connect Google Calendar, you need OAuth credentials from Google Cloud Console.
+                    You can skip this step and configure it later.
+                </p>
+                <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                    <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">How to get OAuth credentials</summary>
+                    <ol style="margin-top: var(--space-3); padding-left: var(--space-5); color: var(--text-tertiary); line-height: 1.7;">
+                        <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener" style="color: var(--accent);">Google Cloud Console</a> and create/select a project</li>
+                        <li>Enable the <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener" style="color: var(--accent);">Google Calendar API</a></li>
+                        <li>Set up the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener" style="color: var(--accent);">OAuth consent screen</a> (External, add calendar.events scope, add yourself as test user)</li>
+                        <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color: var(--accent);">Credentials</a> → Create OAuth client ID (Web application)</li>
+                        <li>Add the redirect URI shown below, then copy the Client ID and Secret</li>
+                    </ol>
+                </details>
+                <div class="form-group">
+                    <label for="google_client_id" class="form-label">Client ID</label>
+                    <input type="text" name="google_client_id" id="google_client_id"
+                           class="form-input"
+                           placeholder="xxxxx.apps.googleusercontent.com">
+                </div>
+                <div class="form-group">
+                    <label for="google_client_secret" class="form-label">Client Secret</label>
+                    <input type="password" name="google_client_secret" id="google_client_secret"
+                           class="form-input"
+                           placeholder="GOCSPX-xxxxx">
+                </div>
+                <div class="alert alert-info mt-4" id="redirect-uri-info" style="display: none;">
+                    <strong>Redirect URI:</strong>
+                    <code id="redirect-uri" style="font-size: var(--text-xs); word-break: break-all;"></code>
+                    <p class="mt-2 text-sm">Add this to your Google OAuth consent screen's authorized redirect URIs.</p>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg btn-block">
+                Complete Setup
+            </button>
+        </form>
+    </div>
+</div>
+
+<script>
+// Show redirect URI when base URL is entered
+document.getElementById('base_url').addEventListener('input', function() {
+    const infoEl = document.getElementById('redirect-uri-info');
+    const uriEl = document.getElementById('redirect-uri');
+    if (this.value) {
+        uriEl.textContent = this.value + '/oauth/callback';
+        infoEl.style.display = 'block';
+    } else {
+        infoEl.style.display = 'none';
+    }
+});
+// Trigger on load if value exists
+if (document.getElementById('base_url').value) {
+    document.getElementById('base_url').dispatchEvent(new Event('input'));
+}
+</script>
+{{end}}
+
+{{template "layout" .}}

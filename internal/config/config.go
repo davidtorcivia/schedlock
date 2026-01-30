@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -471,4 +473,57 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Retention.CompletedRequestsDays = getEnvIntAny(cfg.Retention.CompletedRequestsDays, "SCHEDLOCK_RETENTION_REQUEST_DAYS", "RETENTION_COMPLETED_DAYS")
 	cfg.Retention.AuditLogDays = getEnvIntAny(cfg.Retention.AuditLogDays, "SCHEDLOCK_RETENTION_AUDIT_DAYS", "RETENTION_AUDIT_DAYS")
 	cfg.Retention.WebhookFailuresDays = getEnvIntAny(cfg.Retention.WebhookFailuresDays, "SCHEDLOCK_RETENTION_WEBHOOK_FAILURES_DAYS", "RETENTION_WEBHOOK_FAILURES_DAYS")
+}
+
+// IsFirstRun checks if this is the first run (no password hash configured).
+func (c *Config) IsFirstRun() bool {
+	return c.Auth.AdminPasswordHash == "" && c.Auth.AdminPassword == ""
+}
+
+// LoadWithSetupMode loads configuration allowing for first-run setup.
+// Returns the config, whether this is a first run, and any error.
+func LoadWithSetupMode() (*Config, bool, error) {
+	cfg := defaultConfig()
+
+	dataDir := getEnvAnyDefault(DefaultDataDir, "SCHEDLOCK_DATA_DIR", "DATA_DIR")
+	configPath := getEnvAnyDefault(filepath.Join(dataDir, "config.yaml"), "SCHEDLOCK_CONFIG_FILE", "CONFIG_FILE")
+	if err := loadConfigFile(cfg, configPath); err != nil {
+		return nil, false, err
+	}
+
+	applyEnvOverrides(cfg)
+
+	if cfg.Google.RedirectURI == "" && cfg.Server.BaseURL != "" {
+		cfg.Google.RedirectURI = cfg.Server.BaseURL + "/oauth/callback"
+	}
+
+	isFirstRun := cfg.IsFirstRun()
+
+	if isFirstRun {
+		// In setup mode, generate required keys if not set
+		if cfg.Auth.SecretKey == "" {
+			cfg.Auth.SecretKey = generateRandomBase64(32)
+		}
+		if cfg.Auth.EncryptionKey == "" {
+			cfg.Auth.EncryptionKey = generateRandomBase64(32)
+		}
+		return cfg, true, nil
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, false, err
+	}
+
+	return cfg, false, nil
+}
+
+// generateRandomBase64 generates a random base64-encoded string of the given byte length.
+func generateRandomBase64(n int) string {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	if err != nil {
+		// Fallback: return empty string and let validation fail
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }
