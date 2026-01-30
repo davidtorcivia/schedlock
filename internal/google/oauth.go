@@ -84,6 +84,17 @@ func (m *OAuthManager) UpdateCredentials(clientID, clientSecret string) {
 	m.cacheExpiry = time.Time{}
 }
 
+// UpdateBaseURL updates the base URL and rebuilds the redirect URI.
+func (m *OAuthManager) UpdateBaseURL(baseURL string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.baseURL = baseURL
+	if m.config != nil {
+		m.config.RedirectURL = baseURL + "/oauth/callback"
+	}
+}
+
 // loadCredentialsFromDB attempts to load credentials from the database.
 func (m *OAuthManager) loadCredentialsFromDB() error {
 	if m.credStore == nil {

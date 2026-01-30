@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/database"
@@ -29,6 +30,7 @@ type RuntimeSettings struct {
 	Retention *RetentionSettings `json:"retention,omitempty"`
 	Logging   *LoggingSettings   `json:"logging,omitempty"`
 	Display   *DisplaySettings   `json:"display,omitempty"`
+	Server    *ServerSettings    `json:"server,omitempty"`
 }
 
 type ApprovalSettings struct {
@@ -53,6 +55,11 @@ type DisplaySettings struct {
 	DateFormat     string `json:"date_format"`
 	TimeFormat     string `json:"time_format"`
 	DatetimeFormat string `json:"datetime_format"`
+}
+
+// ServerSettings holds server configuration.
+type ServerSettings struct {
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // Load retrieves runtime settings from the database.
@@ -138,6 +145,13 @@ func (s *RuntimeSettings) Validate() error {
 			return fmt.Errorf("invalid display timezone: %w", err)
 		}
 	}
+	if s.Server != nil && s.Server.BaseURL != "" {
+		if !strings.HasPrefix(s.Server.BaseURL, "http://") && !strings.HasPrefix(s.Server.BaseURL, "https://") {
+			return fmt.Errorf("base_url must start with http:// or https://")
+		}
+		// Remove trailing slash for consistency
+		s.Server.BaseURL = strings.TrimSuffix(s.Server.BaseURL, "/")
+	}
 	return nil
 }
 
@@ -193,6 +207,11 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 		if s.Display.DatetimeFormat != "" {
 			cfg.Display.DatetimeFormat = s.Display.DatetimeFormat
 		}
+	}
+	if s.Server != nil && s.Server.BaseURL != "" {
+		cfg.Server.BaseURL = s.Server.BaseURL
+		// Update OAuth redirect URI to match
+		cfg.Google.RedirectURI = s.Server.BaseURL + "/oauth/callback"
 	}
 
 	return nil

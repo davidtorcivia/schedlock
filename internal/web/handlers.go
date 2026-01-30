@@ -835,6 +835,12 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		displayDatetimeFormat = h.config.Display.DatetimeFormat
 	}
 
+	// Parse server base URL
+	serverBaseURL := strings.TrimSpace(r.FormValue("server_base_url"))
+	if serverBaseURL != "" {
+		serverBaseURL = strings.TrimSuffix(serverBaseURL, "/") // Remove trailing slash
+	}
+
 	settingsPayload := &settings.RuntimeSettings{
 		Approval: &settings.ApprovalSettings{
 			TimeoutMinutes: approvalTimeout,
@@ -856,6 +862,9 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 			TimeFormat:     displayTimeFormat,
 			DatetimeFormat: displayDatetimeFormat,
 		},
+		Server: &settings.ServerSettings{
+			BaseURL: serverBaseURL,
+		},
 	}
 
 	if err := settingsPayload.Validate(); err != nil {
@@ -871,6 +880,11 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	if err := settingsPayload.ApplyTo(h.config); err != nil {
 		h.renderSettingsError(w, r, err.Error())
 		return
+	}
+
+	// Update OAuthManager if base URL changed
+	if serverBaseURL != "" {
+		h.oauthMgr.UpdateBaseURL(serverBaseURL)
 	}
 
 	util.SetDefaultLogger(util.NewLogger(h.config.Logging.Level, h.config.Logging.Format))
@@ -898,6 +912,7 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 			"display_date_format":      displayDateFormat,
 			"display_time_format":      displayTimeFormat,
 			"display_datetime_format":  displayDatetimeFormat,
+			"server_base_url":          serverBaseURL,
 		})
 	}
 
