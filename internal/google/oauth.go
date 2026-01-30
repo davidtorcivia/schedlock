@@ -66,10 +66,8 @@ func (m *OAuthManager) UpdateCredentials(clientID, clientSecret string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Always use current baseURL for redirect URI
 	redirectURL := m.baseURL + "/oauth/callback"
-	if m.config != nil && m.config.RedirectURL != "" {
-		redirectURL = m.config.RedirectURL
-	}
 
 	m.config = &oauth2.Config{
 		ClientID:     clientID,
