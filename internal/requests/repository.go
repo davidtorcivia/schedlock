@@ -182,6 +182,26 @@ func (r *Repository) SetSuggestion(ctx context.Context, id, text, by string) err
 	return nil
 }
 
+// UpdatePayload updates the payload for a pending request.
+func (r *Repository) UpdatePayload(ctx context.Context, id string, payload json.RawMessage) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE requests
+		SET payload = ?
+		WHERE id = ? AND status = ?
+	`, payload, id, database.StatusPendingApproval)
+
+	if err != nil {
+		return fmt.Errorf("failed to update payload: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("request not found or not pending")
+	}
+
+	return nil
+}
+
 // SetResult stores the execution result.
 func (r *Repository) SetResult(ctx context.Context, id string, result json.RawMessage) error {
 	_, err := r.db.ExecContext(ctx, `

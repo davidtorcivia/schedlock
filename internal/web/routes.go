@@ -32,6 +32,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	protected.HandleFunc("POST /requests/{requestId}/approve", h.ApproveRequest)
 	protected.HandleFunc("POST /requests/{requestId}/deny", h.DenyRequest)
 	protected.HandleFunc("POST /requests/{requestId}/suggest", h.SuggestChange)
+	protected.HandleFunc("POST /requests/{requestId}/update", h.UpdatePayload)
 
 	// History
 	protected.HandleFunc("GET /history", h.History)

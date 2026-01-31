@@ -379,6 +379,19 @@ func (h *Handler) PendingRequests(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// EventDisplayData holds parsed event data for human-readable display.
+type EventDisplayData struct {
+	Summary     string
+	Description string
+	Location    string
+	CalendarID  string
+	EventID     string // for update/delete
+	Start       time.Time
+	End         time.Time
+	Attendees   []string
+	IsAllDay    bool
+}
+
 // RequestDetail shows a specific request.
 func (h *Handler) RequestDetail(w http.ResponseWriter, r *http.Request) {
 	requestID := r.PathValue("requestId")
@@ -401,12 +414,87 @@ func (h *Handler) RequestDetail(w http.ResponseWriter, r *http.Request) {
 	var payload interface{}
 	json.Unmarshal(req.Payload, &payload)
 
+	// Parse into human-readable format based on operation type
+	eventData := h.parseEventPayload(req.Operation, req.Payload)
+
 	h.render(w, r, "detail.html", map[string]interface{}{
 		"Title":        "Request Details",
 		"Request":      req,
 		"Payload":      payload,
+		"EventData":    eventData,
 		"AuditEntries": auditEntries,
 	})
+}
+
+// parseEventPayload extracts human-readable event data from the payload.
+func (h *Handler) parseEventPayload(operation string, payload json.RawMessage) *EventDisplayData {
+	data := &EventDisplayData{}
+
+	switch operation {
+	case "create_event":
+		var intent struct {
+			Summary     string    `json:"summary"`
+			Description string    `json:"description"`
+			Location    string    `json:"location"`
+			CalendarID  string    `json:"calendarId"`
+			Start       time.Time `json:"start"`
+			End         time.Time `json:"end"`
+			Attendees   []string  `json:"attendees"`
+		}
+		if err := json.Unmarshal(payload, &intent); err == nil {
+			data.Summary = intent.Summary
+			data.Description = intent.Description
+			data.Location = intent.Location
+			data.CalendarID = intent.CalendarID
+			data.Start = intent.Start
+			data.End = intent.End
+			data.Attendees = intent.Attendees
+		}
+
+	case "update_event":
+		var intent struct {
+			EventID     string     `json:"eventId"`
+			CalendarID  string     `json:"calendarId"`
+			Summary     *string    `json:"summary"`
+			Description *string    `json:"description"`
+			Location    *string    `json:"location"`
+			Start       *time.Time `json:"start"`
+			End         *time.Time `json:"end"`
+			Attendees   []string   `json:"attendees"`
+		}
+		if err := json.Unmarshal(payload, &intent); err == nil {
+			data.EventID = intent.EventID
+			data.CalendarID = intent.CalendarID
+			if intent.Summary != nil {
+				data.Summary = *intent.Summary
+			}
+			if intent.Description != nil {
+				data.Description = *intent.Description
+			}
+			if intent.Location != nil {
+				data.Location = *intent.Location
+			}
+			if intent.Start != nil {
+				data.Start = *intent.Start
+			}
+			if intent.End != nil {
+				data.End = *intent.End
+			}
+			data.Attendees = intent.Attendees
+		}
+
+	case "delete_event":
+		var intent struct {
+			EventID    string `json:"eventId"`
+			CalendarID string `json:"calendarId"`
+		}
+		if err := json.Unmarshal(payload, &intent); err == nil {
+			data.EventID = intent.EventID
+			data.CalendarID = intent.CalendarID
+		}
+	}
+
+	return data
 }
 
 // ApproveRequest handles approval from web UI.
@@ -480,6 +568,128 @@ func (h *Handler) SuggestChange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/pending", http.StatusSeeOther)
+}
+
+// UpdatePayload handles updating the request payload before approval.
+func (h *Handler) UpdatePayload(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("requestId")
+	if requestID == "" {
+		http.Error(w, "Request ID required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	req, err := h.requestRepo.GetByID(ctx, requestID)
+	if err != nil || req == nil {
+		http.Error(w, "Request not found", http.StatusNotFound)
+		return
+	}
+
+	// Only allow updates to pending requests
+	if req.Status != "pending_approval" {
+		http.Error(w, "Can only update pending requests", http.StatusBadRequest)
+		return
+	}
+
+	// Build updated payload based on operation type
+	var newPayload json.RawMessage
+
+	switch req.Operation {
+	case "create_event":
+		// Parse form values and build new payload
+		startStr := r.FormValue("start")
+		endStr := r.FormValue("end")
+
+		var startTime, endTime time.Time
+		if startStr != "" {
+			startTime, _ = time.Parse("2006-01-02T15:04", startStr)
+		}
+		if endStr != "" {
+			endTime, _ = time.Parse("2006-01-02T15:04", endStr)
+		}
+
+		// Parse existing payload to keep non-editable fields
+		var existing map[string]interface{}
+		json.Unmarshal(req.Payload, &existing)
+
+		// Update editable fields
+		if summary := r.FormValue("summary"); summary != "" {
+			existing["summary"] = summary
+		}
+		if description := r.FormValue("description"); description != "" {
+			existing["description"] = description
+		} else if r.FormValue("description_present") == "1" {
+			existing["description"] = ""
+		}
+		if location := r.FormValue("location"); location != "" {
+			existing["location"] = location
+		} else if r.FormValue("location_present") == "1" {
+			existing["location"] = ""
+		}
+		if !startTime.IsZero() {
+			existing["start"] = startTime
+		}
+		if !endTime.IsZero() {
+			existing["end"] = endTime
+		}
+
+		newPayload, _ = json.Marshal(existing)
+
+	case "update_event":
+		// Similar handling for update
+		startStr := r.FormValue("start")
+		endStr := r.FormValue("end")
+
+		var existing map[string]interface{}
+		json.Unmarshal(req.Payload, &existing)
+
+		if summary := r.FormValue("summary"); summary != "" {
+			existing["summary"] = summary
+		}
+		if description := r.FormValue("description"); description != "" {
+			existing["description"] = description
+		} else if r.FormValue("description_present") == "1" {
+			existing["description"] = ""
+		}
+		if location := r.FormValue("location"); location != "" {
+			existing["location"] = location
+		} else if r.FormValue("location_present") == "1" {
+			existing["location"] = ""
+		}
+		if startStr != "" {
+			if t, err := time.Parse("2006-01-02T15:04", startStr); err == nil {
+				existing["start"] = t
+			}
+		}
+		if endStr != "" {
+			if t, err := time.Parse("2006-01-02T15:04", endStr); err == nil {
+				existing["end"] = t
+			}
+		}
+
+		newPayload, _ = json.Marshal(existing)
+
+	default:
+		http.Error(w, "Cannot edit this request type", http.StatusBadRequest)
+		return
+	}
+
+	// Update the payload in the database
+	if err := h.requestRepo.UpdatePayload(ctx, requestID, newPayload); err != nil {
+		http.Error(w, "Failed to update payload: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Log the update
+	session := GetSession(r.Context())
+	actor := "web:admin"
+	if session != nil {
+		actor = "web:" + session.UserID
+	}
+	h.auditLogger.Log(ctx, "request_edited", requestID, req.APIKeyID, actor, nil)
+
+	// Redirect back to the detail page
+	http.Redirect(w, r, "/requests/"+requestID, http.StatusSeeOther)
 }
 
 // History shows audit log.

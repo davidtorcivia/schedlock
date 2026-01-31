@@ -139,7 +139,7 @@ func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool, dura
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode, // Lax allows OAuth redirects while still protecting against CSRF
 		MaxAge:   int(duration.Seconds()),
 	})
 }
@@ -183,7 +183,7 @@ func SetCSRFCookie(w http.ResponseWriter, token string, secure bool, duration ti
 		Path:     "/",
 		HttpOnly: false, // JS needs to read this
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode, // Lax allows OAuth redirects
 		MaxAge:   int(duration.Seconds()),
 	})
 }
