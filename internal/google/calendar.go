@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -210,6 +211,10 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 		return nil, fmt.Errorf("failed to get existing event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
 	}
 
+	// Log existing event details for debugging
+	fmt.Printf("[DEBUG] Existing event: id=%s, status=%s, recurring=%s, start=%+v, end=%+v\n",
+		existing.Id, existing.Status, existing.RecurringEventId, existing.Start, existing.End)
+
 	// Apply updates (PATCH semantics)
 	if intent.Summary != nil {
 		existing.Summary = *intent.Summary
@@ -281,7 +286,12 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 
 	updated, err := service.Events.Update(calendarID, intent.EventID, existing).Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("failed to update event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
+		// Extract detailed error information from Google API
+		var details string
+		if gErr, ok := err.(*googleapi.Error); ok {
+			details = fmt.Sprintf("code=%d, message=%s, errors=%v", gErr.Code, gErr.Message, gErr.Errors)
+		}
+		return nil, fmt.Errorf("failed to update event (calendar=%s, event=%s, details=%s): %w", calendarID, intent.EventID, details, err)
 	}
 
 	converted := convertEvent(updated)
