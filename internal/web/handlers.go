@@ -706,7 +706,11 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 // APIKeys shows API key management.
 func (h *Handler) APIKeys(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	keys, _ := h.apiKeyRepo.List(ctx, false)
+	keys, err := h.apiKeyRepo.List(ctx, false)
+	if err != nil {
+		http.Error(w, "Failed to load API keys: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	h.render(w, r, "apikeys.html", map[string]interface{}{
 		"Title": "API Keys",

@@ -159,9 +159,9 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 		tier              string
 		constraintsJSON   sql.NullString
 		createdAtStr      sql.NullString
-		lastUsedAt        sql.NullTime
-		expiresAt         sql.NullTime
-		revokedAt         sql.NullTime
+		lastUsedAtStr     sql.NullString
+		expiresAtStr      sql.NullString
+		revokedAtStr      sql.NullString
 		rateLimitOverride sql.NullInt64
 	)
 
@@ -172,7 +172,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 		WHERE id = ?
 	`, id).Scan(
 		&keyHash, &keyPrefix, &name, &tier, &constraintsJSON,
-		&createdAtStr, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
+		&createdAtStr, &lastUsedAtStr, &expiresAtStr, &revokedAtStr, &rateLimitOverride,
 	)
 
 	if err == sql.ErrNoRows {
@@ -189,10 +189,27 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*database.APIKey, 
 		json.Unmarshal([]byte(constraintsJSON.String), constraints)
 	}
 
-	// Parse created_at timestamp
+	// Parse timestamp columns (stored as TEXT in SQLite)
 	var createdAt time.Time
 	if createdAtStr.Valid && createdAtStr.String != "" {
 		createdAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr.String)
+	}
+
+	var lastUsedAt, expiresAt, revokedAt sql.NullTime
+	if lastUsedAtStr.Valid && lastUsedAtStr.String != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", lastUsedAtStr.String); err == nil {
+			lastUsedAt = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+	if expiresAtStr.Valid && expiresAtStr.String != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", expiresAtStr.String); err == nil {
+			expiresAt = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+	if revokedAtStr.Valid && revokedAtStr.String != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", revokedAtStr.String); err == nil {
+			revokedAt = sql.NullTime{Time: t, Valid: true}
+		}
 	}
 
 	return &database.APIKey{
@@ -238,15 +255,15 @@ func (r *Repository) List(ctx context.Context, includeRevoked bool) ([]database.
 			tier              string
 			constraintsJSON   sql.NullString
 			createdAtStr      sql.NullString
-			lastUsedAt        sql.NullTime
-			expiresAt         sql.NullTime
-			revokedAt         sql.NullTime
+			lastUsedAtStr     sql.NullString
+			expiresAtStr      sql.NullString
+			revokedAtStr      sql.NullString
 			rateLimitOverride sql.NullInt64
 		)
 
 		if err := rows.Scan(
 			&id, &keyHash, &keyPrefix, &name, &tier, &constraintsJSON,
-			&createdAtStr, &lastUsedAt, &expiresAt, &revokedAt, &rateLimitOverride,
+			&createdAtStr, &lastUsedAtStr, &expiresAtStr, &revokedAtStr, &rateLimitOverride,
 		); err != nil {
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
@@ -257,10 +274,27 @@ func (r *Repository) List(ctx context.Context, includeRevoked bool) ([]database.
 			json.Unmarshal([]byte(constraintsJSON.String), constraints)
 		}
 
-		// Parse created_at timestamp
+		// Parse timestamp columns (stored as TEXT in SQLite)
 		var createdAt time.Time
 		if createdAtStr.Valid && createdAtStr.String != "" {
 			createdAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr.String)
+		}
+
+		var lastUsedAt, expiresAt, revokedAt sql.NullTime
+		if lastUsedAtStr.Valid && lastUsedAtStr.String != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", lastUsedAtStr.String); err == nil {
+				lastUsedAt = sql.NullTime{Time: t, Valid: true}
+			}
+		}
+		if expiresAtStr.Valid && expiresAtStr.String != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", expiresAtStr.String); err == nil {
+				expiresAt = sql.NullTime{Time: t, Valid: true}
+			}
+		}
+		if revokedAtStr.Valid && revokedAtStr.String != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", revokedAtStr.String); err == nil {
+				revokedAt = sql.NullTime{Time: t, Valid: true}
+			}
 		}
 
 		keys = append(keys, database.APIKey{
