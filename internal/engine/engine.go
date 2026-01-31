@@ -363,6 +363,12 @@ func (e *Engine) executeUpdateEvent(ctx context.Context, req *database.Request) 
 		return nil, fmt.Errorf("invalid payload: %w", err)
 	}
 
+	util.Debug("Executing update event",
+		"request_id", req.ID,
+		"calendar_id", intent.CalendarID,
+		"event_id", intent.EventID,
+	)
+
 	return e.calendarClient.UpdateEvent(ctx, &intent)
 }
 
@@ -371,6 +377,12 @@ func (e *Engine) executeDeleteEvent(ctx context.Context, req *database.Request) 
 	if err := json.Unmarshal(req.Payload, &intent); err != nil {
 		return fmt.Errorf("invalid payload: %w", err)
 	}
+
+	util.Debug("Executing delete event",
+		"request_id", req.ID,
+		"calendar_id", intent.CalendarID,
+		"event_id", intent.EventID,
+	)
 
 	return e.calendarClient.DeleteEvent(ctx, &intent)
 }

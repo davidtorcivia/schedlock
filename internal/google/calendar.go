@@ -207,7 +207,7 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 	// Get existing event first
 	existing, err := service.Events.Get(calendarID, intent.EventID).Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get existing event: %w", err)
+		return nil, fmt.Errorf("failed to get existing event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
 	}
 
 	// Apply updates (PATCH semantics)
@@ -259,7 +259,7 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 
 	updated, err := service.Events.Update(calendarID, intent.EventID, existing).Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("failed to update event: %w", err)
+		return nil, fmt.Errorf("failed to update event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
 	}
 
 	converted := convertEvent(updated)
@@ -280,7 +280,7 @@ func (c *CalendarClient) DeleteEvent(ctx context.Context, intent *EventDeleteInt
 
 	err = service.Events.Delete(calendarID, intent.EventID).Context(ctx).Do()
 	if err != nil {
-		return fmt.Errorf("failed to delete event: %w", err)
+		return fmt.Errorf("failed to delete event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
 	}
 
 	return nil
