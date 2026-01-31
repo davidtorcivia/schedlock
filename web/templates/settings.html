@@ -191,6 +191,23 @@
                     </div>
                 </div>
                 <div id="ntfy_fields" style="{{if not .NtfyConfig.Enabled}}display: none;{{end}}">
+                    <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                        <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+                            How to set up ntfy
+                        </summary>
+                        <ol style="margin-top: var(--space-3); padding-left: var(--space-5); color: var(--text-tertiary); line-height: 1.7;">
+                            <li>Install the <a href="https://ntfy.sh/" target="_blank" rel="noopener" style="color: var(--accent);">ntfy app</a> on your phone (iOS/Android) or desktop</li>
+                            <li>Choose a <strong>unique topic name</strong> (e.g., <code>schedlock-alerts-abc123</code>)
+                                <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
+                                    <li>Topics are public by default—use a random, hard-to-guess name</li>
+                                    <li>Or <a href="https://ntfy.sh/docs/config/#access-control" target="_blank" rel="noopener" style="color: var(--accent);">set up access control</a> for private topics</li>
+                                </ul>
+                            </li>
+                            <li>In the ntfy app, tap <strong>+</strong> and subscribe to your topic name</li>
+                            <li>Enter the topic name below (Server URL defaults to ntfy.sh)</li>
+                            <li><strong>Optional:</strong> For private topics, create an access token at <a href="https://ntfy.sh/account" target="_blank" rel="noopener" style="color: var(--accent);">ntfy.sh/account</a></li>
+                        </ol>
+                    </details>
                     <div class="form-row">
                         <div class="form-group">
                             <label class="form-label">Server URL</label>
@@ -244,6 +261,24 @@
                     </div>
                 </div>
                 <div id="pushover_fields" style="{{if not .PushoverConfig.Enabled}}display: none;{{end}}">
+                    <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                        <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+                            How to set up Pushover
+                        </summary>
+                        <ol style="margin-top: var(--space-3); padding-left: var(--space-5); color: var(--text-tertiary); line-height: 1.7;">
+                            <li>Create a <a href="https://pushover.net/" target="_blank" rel="noopener" style="color: var(--accent);">Pushover account</a> ($5 one-time purchase after 30-day trial)</li>
+                            <li>Install the Pushover app on your <a href="https://pushover.net/clients" target="_blank" rel="noopener" style="color: var(--accent);">iOS, Android, or desktop device</a></li>
+                            <li>Find your <strong>User Key</strong> on your <a href="https://pushover.net/" target="_blank" rel="noopener" style="color: var(--accent);">Pushover dashboard</a> (top right)</li>
+                            <li>Create a new application:
+                                <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
+                                    <li>Go to <a href="https://pushover.net/apps/build" target="_blank" rel="noopener" style="color: var(--accent);">Create New Application</a></li>
+                                    <li>Name it something like "SchedLock"</li>
+                                    <li>Copy the <strong>API Token/Key</strong> shown after creation</li>
+                                </ul>
+                            </li>
+                            <li>Enter both keys below</li>
+                        </ol>
+                    </details>
                     <div class="form-row">
                         <div class="form-group">
                             <label class="form-label">Application Token <span style="color: var(--error-700);">*</span></label>
@@ -297,6 +332,28 @@
                     </div>
                 </div>
                 <div id="telegram_fields" style="{{if not .TelegramConfig.Enabled}}display: none;{{end}}">
+                    <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                        <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+                            How to set up Telegram
+                        </summary>
+                        <ol style="margin-top: var(--space-3); padding-left: var(--space-5); color: var(--text-tertiary); line-height: 1.7;">
+                            <li>Open Telegram and search for <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color: var(--accent);">@BotFather</a></li>
+                            <li>Send <code>/newbot</code> and follow the prompts to create your bot
+                                <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
+                                    <li>Choose a name (e.g., "SchedLock Alerts")</li>
+                                    <li>Choose a username ending in "bot" (e.g., "schedlock_alerts_bot")</li>
+                                </ul>
+                            </li>
+                            <li>Copy the <strong>HTTP API token</strong> BotFather gives you (looks like <code>123456:ABC-DEF...</code>)</li>
+                            <li>Get your Chat ID:
+                                <ul style="margin-top: var(--space-1); margin-bottom: var(--space-1);">
+                                    <li><strong>For personal messages:</strong> Message <a href="https://t.me/userinfobot" target="_blank" rel="noopener" style="color: var(--accent);">@userinfobot</a> to get your user ID</li>
+                                    <li><strong>For group notifications:</strong> Add the bot to your group, then send a message. Visit <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> to find the chat ID (negative number starting with -100)</li>
+                                </ul>
+                            </li>
+                            <li><strong>Important:</strong> Start a conversation with your bot first (send it any message) or it won't be able to message you</li>
+                        </ol>
+                    </details>
                     <div class="form-row">
                         <div class="form-group">
                             <label class="form-label">Bot Token <span style="color: var(--error-700);">*</span></label>
