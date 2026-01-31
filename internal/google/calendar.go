@@ -193,7 +193,7 @@ func (c *CalendarClient) CreateEvent(ctx context.Context, intent *EventIntent) (
 	return &converted, nil
 }
 
-// UpdateEvent updates an existing event.
+// UpdateEvent updates an existing event using PATCH semantics.
 func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateIntent) (*Event, error) {
 	service, err := c.getService(ctx)
 	if err != nil {
@@ -205,78 +205,57 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 		calendarID = "primary"
 	}
 
-	// Get existing event first
-	existing, err := service.Events.Get(calendarID, intent.EventID).Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get existing event (calendar=%s, event=%s): %w", calendarID, intent.EventID, err)
-	}
+	// Build a patch event with only the fields we want to update
+	patchEvent := &calendar.Event{}
 
-	// Log existing event details for debugging
-	fmt.Printf("[DEBUG] Existing event: id=%s, status=%s, recurring=%s, start=%+v, end=%+v\n",
-		existing.Id, existing.Status, existing.RecurringEventId, existing.Start, existing.End)
-
-	// Apply updates (PATCH semantics)
 	if intent.Summary != nil {
-		existing.Summary = *intent.Summary
+		patchEvent.Summary = *intent.Summary
 	}
 	if intent.Description != nil {
-		existing.Description = *intent.Description
+		patchEvent.Description = *intent.Description
 	}
 	if intent.Location != nil {
-		existing.Location = *intent.Location
+		patchEvent.Location = *intent.Location
 	}
 	if intent.Start != nil {
-		// Preserve existing TimeZone if set
-		tz := ""
-		if existing.Start != nil {
-			tz = existing.Start.TimeZone
-		}
-		existing.Start = &calendar.EventDateTime{
+		// Use RFC3339 format which includes timezone offset - don't set TimeZone separately
+		patchEvent.Start = &calendar.EventDateTime{
 			DateTime: intent.Start.Format(time.RFC3339),
-			TimeZone: tz,
 		}
 	}
 	if intent.End != nil {
-		// Preserve existing TimeZone if set
-		tz := ""
-		if existing.End != nil {
-			tz = existing.End.TimeZone
-		}
-		existing.End = &calendar.EventDateTime{
+		// Use RFC3339 format which includes timezone offset - don't set TimeZone separately
+		patchEvent.End = &calendar.EventDateTime{
 			DateTime: intent.End.Format(time.RFC3339),
-			TimeZone: tz,
 		}
 	}
 
-	// Validate Start < End after partial updates
-	if existing.Start != nil && existing.End != nil &&
-		existing.Start.DateTime != "" && existing.End.DateTime != "" {
-		startTime, err1 := time.Parse(time.RFC3339, existing.Start.DateTime)
-		endTime, err2 := time.Parse(time.RFC3339, existing.End.DateTime)
-		if err1 == nil && err2 == nil && !startTime.Before(endTime) {
+	// Validate Start < End if both are being updated
+	if intent.Start != nil && intent.End != nil {
+		if !intent.Start.Before(*intent.End) {
 			return nil, fmt.Errorf("start time must be before end time")
 		}
 	}
+
 	if len(intent.Attendees) > 0 {
-		existing.Attendees = nil
 		for _, email := range intent.Attendees {
-			existing.Attendees = append(existing.Attendees, &calendar.EventAttendee{
+			patchEvent.Attendees = append(patchEvent.Attendees, &calendar.EventAttendee{
 				Email: email,
 			})
 		}
 	}
 	if intent.ColorID != nil {
-		existing.ColorId = *intent.ColorID
+		patchEvent.ColorId = *intent.ColorID
 	}
 	if intent.Visibility != nil {
-		existing.Visibility = *intent.Visibility
+		patchEvent.Visibility = *intent.Visibility
 	}
 	if intent.Reminders != nil {
-		existing.Reminders = &calendar.EventReminders{
+		patchEvent.Reminders = &calendar.EventReminders{
 			UseDefault: intent.Reminders.UseDefault,
 		}
 		for _, r := range intent.Reminders.Overrides {
-			existing.Reminders.Overrides = append(existing.Reminders.Overrides,
+			patchEvent.Reminders.Overrides = append(patchEvent.Reminders.Overrides,
 				&calendar.EventReminder{
 					Method:  r.Method,
 					Minutes: int64(r.Minutes),
@@ -284,7 +263,8 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 		}
 	}
 
-	updated, err := service.Events.Update(calendarID, intent.EventID, existing).Context(ctx).Do()
+	// Use Patch instead of Update - only sends the fields we specify
+	updated, err := service.Events.Patch(calendarID, intent.EventID, patchEvent).Context(ctx).Do()
 	if err != nil {
 		// Extract detailed error information from Google API
 		var details string
