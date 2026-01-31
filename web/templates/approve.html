@@ -60,16 +60,47 @@
             {{end}}
         </div>
 
+        {{if .RequiresPIN}}
+        <div class="approve-pin">
+            <label class="approve-pin-label">Enter PIN to continue</label>
+            <input type="password" id="approval-pin" name="pin" class="approve-pin-input"
+                   pattern="[0-9]*" inputmode="numeric" maxlength="8" placeholder="****"
+                   autocomplete="off" required>
+            {{if .PINError}}
+            <p class="approve-pin-error">{{.PINError}}</p>
+            {{end}}
+        </div>
+        {{end}}
+
         <div class="approve-actions">
-            <form action="/approve/{{.Token}}" method="POST" class="approve-form">
+            <form action="/approve/{{.Token}}" method="POST" class="approve-form" id="approve-form">
                 <input type="hidden" name="action" value="approve">
+                {{if .RequiresPIN}}<input type="hidden" name="pin" class="pin-field">{{end}}
                 <button type="submit" class="btn btn-success btn-lg">Approve</button>
             </form>
-            <form action="/approve/{{.Token}}" method="POST" class="approve-form">
+            <form action="/approve/{{.Token}}" method="POST" class="approve-form" id="deny-form">
                 <input type="hidden" name="action" value="deny">
+                {{if .RequiresPIN}}<input type="hidden" name="pin" class="pin-field">{{end}}
                 <button type="submit" class="btn btn-danger btn-lg">Deny</button>
             </form>
         </div>
+
+        {{if .RequiresPIN}}
+        <script>
+        // Copy PIN to form fields on submit
+        document.querySelectorAll('.approve-form').forEach(form => {
+            form.addEventListener('submit', function(e) {
+                const pin = document.getElementById('approval-pin').value;
+                if (!pin) {
+                    e.preventDefault();
+                    document.getElementById('approval-pin').focus();
+                    return;
+                }
+                this.querySelector('.pin-field').value = pin;
+            });
+        });
+        </script>
+        {{end}}
 
         <div class="approve-footer">
             <a href="/login?redirect=/requests/{{.Request.ID}}" class="approve-link">Sign in for more details</a>
@@ -191,6 +222,46 @@
 .approve-detail-value {
     color: var(--text-primary);
     word-break: break-word;
+}
+
+.approve-pin {
+    padding: var(--space-4) var(--space-6);
+    text-align: center;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.approve-pin-label {
+    display: block;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-2);
+}
+
+.approve-pin-input {
+    width: 120px;
+    padding: var(--space-3);
+    font-size: var(--text-xl);
+    font-family: var(--font-mono);
+    text-align: center;
+    letter-spacing: 0.2em;
+    border: 2px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.approve-pin-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.approve-pin-error {
+    color: var(--error-700);
+    font-size: var(--text-sm);
+    margin-top: var(--space-2);
+    margin-bottom: 0;
 }
 
 .approve-actions {

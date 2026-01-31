@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -677,6 +678,12 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 		telegramConfig.WebhookSecret = h.config.Notifications.Telegram.WebhookSecret
 	}
 
+	// Check if approval PIN is configured
+	hasApprovalPIN := false
+	if h.settingsStore != nil {
+		hasApprovalPIN, _ = h.settingsStore.HasApprovalPIN(ctx)
+	}
+
 	h.render(w, r, "settings.html", map[string]interface{}{
 		"Title":                 "Settings",
 		"Providers":             providers,
@@ -691,6 +698,7 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 		"TelegramConfig":        telegramConfig,
 		"GoogleOAuthClientID":   googleOAuthClientID,
 		"GoogleOAuthConfigured": googleOAuthConfigured,
+		"HasApprovalPIN":        hasApprovalPIN,
 	})
 }
 
@@ -900,6 +908,36 @@ func (h *Handler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		serverBaseURL = strings.TrimSuffix(serverBaseURL, "/") // Remove trailing slash
 	}
 
+	// Handle approval PIN
+	clearPIN := r.FormValue("clear_pin") == "1"
+	approvalPIN := strings.TrimSpace(r.FormValue("approval_pin"))
+
+	if clearPIN {
+		// Clear the PIN
+		if err := h.settingsStore.SetApprovalPIN(ctx, ""); err != nil {
+			h.renderSettingsError(w, r, "failed to clear PIN")
+			return
+		}
+	} else if approvalPIN != "" {
+		// Validate PIN format (4-8 digits)
+		if len(approvalPIN) < 4 || len(approvalPIN) > 8 {
+			h.renderSettingsError(w, r, "PIN must be 4-8 digits")
+			return
+		}
+		for _, c := range approvalPIN {
+			if c < '0' || c > '9' {
+				h.renderSettingsError(w, r, "PIN must contain only digits")
+				return
+			}
+		}
+		// Set the new PIN
+		if err := h.settingsStore.SetApprovalPIN(ctx, approvalPIN); err != nil {
+			h.renderSettingsError(w, r, "failed to save PIN")
+			return
+		}
+	}
+	// If neither clear nor new PIN, keep existing
+
 	settingsPayload := &settings.RuntimeSettings{
 		Approval: &settings.ApprovalSettings{
 			TimeoutMinutes: approvalTimeout,
@@ -1102,12 +1140,33 @@ func (h *Handler) PublicApprove(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Check if PIN is required
+	requiresPIN := false
+	if h.settingsStore != nil {
+		requiresPIN, _ = h.settingsStore.HasApprovalPIN(ctx)
+	}
+
 	// Handle POST (approval/denial action)
 	if r.Method == http.MethodPost {
 		action := r.FormValue("action")
 		if action != "approve" && action != "deny" {
 			h.renderApproveError(w, "Invalid Action", "Please use the approve or deny buttons.", false)
 			return
+		}
+
+		// Validate PIN if required
+		if requiresPIN {
+			pin := r.FormValue("pin")
+			valid, err := h.settingsStore.VerifyApprovalPIN(ctx, pin)
+			if err != nil {
+				h.renderApproveError(w, "Error", "Unable to verify PIN.", false)
+				return
+			}
+			if !valid {
+				// Re-show the form with error
+				h.renderApproveWithPINError(w, ctx, token, "Incorrect PIN. Please try again.")
+				return
+			}
 		}
 
 		// Consume token and process
@@ -1175,6 +1234,36 @@ func (h *Handler) PublicApprove(w http.ResponseWriter, r *http.Request) {
 		"Request":      req,
 		"EventDetails": eventDetails,
 		"ExpiresIn":    expiresIn,
+		"RequiresPIN":  requiresPIN,
+	})
+}
+
+// renderApproveWithPINError re-renders the approval page with a PIN error message.
+func (h *Handler) renderApproveWithPINError(w http.ResponseWriter, ctx context.Context, token, pinError string) {
+	// Re-validate token to get request details
+	result, err := h.tokenRepo.Validate(ctx, token)
+	if err != nil || !result.Valid {
+		h.renderApproveError(w, "Link Expired or Used", "The approval link is no longer valid.", false)
+		return
+	}
+
+	req, err := h.requestRepo.GetByID(ctx, result.RequestID)
+	if err != nil || req == nil {
+		h.renderApproveError(w, "Request Not Found", "The associated request could not be found.", false)
+		return
+	}
+
+	eventDetails := extractEventDetails(req.Payload)
+	expiresIn := formatDuration(time.Until(req.ExpiresAt))
+
+	h.renderApprove(w, "approve-layout", map[string]interface{}{
+		"Title":        "Approve Request",
+		"Token":        token,
+		"Request":      req,
+		"EventDetails": eventDetails,
+		"ExpiresIn":    expiresIn,
+		"RequiresPIN":  true,
+		"PINError":     pinError,
 	})
 }
 

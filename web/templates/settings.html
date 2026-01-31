@@ -421,7 +421,7 @@ async function testProvider(provider) {
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Timeout <small>(minutes)</small></label>
-                        <input type="number" min="1" max="1440" name="approval_timeout_minutes" 
+                        <input type="number" min="1" max="1440" name="approval_timeout_minutes"
                                value="{{.Config.Approval.TimeoutMinutes}}"
                                class="form-input">
                         <p class="form-hint">How long before a request expires</p>
@@ -434,6 +434,33 @@ async function testProvider(provider) {
                         </select>
                         <p class="form-hint">Action when request expires</p>
                     </div>
+                </div>
+            </div>
+
+            <div class="mb-8">
+                <h5 style="margin-bottom: var(--space-4);">Security</h5>
+                <div class="form-group">
+                    <label class="form-label">Approval PIN</label>
+                    <div class="form-row">
+                        <div class="form-group mb-0">
+                            <input type="password" name="approval_pin" id="approval_pin"
+                                   class="form-input" placeholder="{{if .HasApprovalPIN}}(leave empty to keep existing){{else}}Enter 4-8 digit PIN{{end}}"
+                                   pattern="[0-9]*" inputmode="numeric" minlength="4" maxlength="8">
+                        </div>
+                        {{if .HasApprovalPIN}}
+                        <div class="form-group mb-0" style="flex: 0 0 auto;">
+                            <button type="button" class="btn btn-ghost" onclick="document.getElementById('clear_pin').value='1'; this.form.submit();">Remove PIN</button>
+                        </div>
+                        {{end}}
+                    </div>
+                    <input type="hidden" name="clear_pin" id="clear_pin" value="">
+                    <p class="form-hint">
+                        {{if .HasApprovalPIN}}
+                        PIN is currently enabled. Users must enter the PIN to approve/deny requests from notification links.
+                        {{else}}
+                        Optional: Require a PIN to approve or deny requests from notification links. Leave empty to disable.
+                        {{end}}
+                    </p>
                 </div>
             </div>
 

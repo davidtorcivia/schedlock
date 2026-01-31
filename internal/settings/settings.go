@@ -10,6 +10,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/util"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const settingsKey = "runtime_settings"
@@ -31,6 +32,7 @@ type RuntimeSettings struct {
 	Logging   *LoggingSettings   `json:"logging,omitempty"`
 	Display   *DisplaySettings   `json:"display,omitempty"`
 	Server    *ServerSettings    `json:"server,omitempty"`
+	Security  *SecuritySettings  `json:"security,omitempty"`
 }
 
 type ApprovalSettings struct {
@@ -60,6 +62,11 @@ type DisplaySettings struct {
 // ServerSettings holds server configuration.
 type ServerSettings struct {
 	BaseURL string `json:"base_url,omitempty"`
+}
+
+// SecuritySettings holds security configuration.
+type SecuritySettings struct {
+	ApprovalPINHash string `json:"approval_pin_hash,omitempty"` // bcrypt hash of the approval PIN
 }
 
 // Load retrieves runtime settings from the database.
@@ -102,6 +109,63 @@ func (s *Store) Save(ctx context.Context, settings *RuntimeSettings) error {
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
 	`, settingsKey, string(data))
 	return err
+}
+
+// SetApprovalPIN sets the approval PIN (hashes and stores it).
+// Pass empty string to disable PIN requirement.
+func (s *Store) SetApprovalPIN(ctx context.Context, pin string) error {
+	settings, err := s.Load(ctx)
+	if err != nil {
+		return err
+	}
+
+	if settings.Security == nil {
+		settings.Security = &SecuritySettings{}
+	}
+
+	if pin == "" {
+		settings.Security.ApprovalPINHash = ""
+	} else {
+		hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("failed to hash PIN: %w", err)
+		}
+		settings.Security.ApprovalPINHash = string(hash)
+	}
+
+	return s.Save(ctx, settings)
+}
+
+// VerifyApprovalPIN checks if the provided PIN matches the stored hash.
+// Returns true if PIN is correct, or if no PIN is configured.
+func (s *Store) VerifyApprovalPIN(ctx context.Context, pin string) (bool, error) {
+	settings, err := s.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	// No PIN configured - always valid
+	if settings.Security == nil || settings.Security.ApprovalPINHash == "" {
+		return true, nil
+	}
+
+	// PIN required but not provided
+	if pin == "" {
+		return false, nil
+	}
+
+	// Verify PIN
+	err = bcrypt.CompareHashAndPassword([]byte(settings.Security.ApprovalPINHash), []byte(pin))
+	return err == nil, nil
+}
+
+// HasApprovalPIN returns true if an approval PIN is configured.
+func (s *Store) HasApprovalPIN(ctx context.Context) (bool, error) {
+	settings, err := s.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+	return settings.Security != nil && settings.Security.ApprovalPINHash != "", nil
 }
 
 // Validate ensures runtime settings are valid.
