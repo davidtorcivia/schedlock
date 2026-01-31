@@ -1,6 +1,8 @@
 # SchedLock
 
-A Calendar Proxy service that provides human-in-the-loop approval for AI agent calendar operations.
+SchedLock sits between your AI agents and Google Calendar, ensuring that every calendar modification passes through human review before execution. When an agent requests a calendar operation—creating an event, moving a meeting, or deleting an appointment—SchedLock captures the request, sends you a notification through your preferred channel, and waits for your explicit approval before touching your calendar.
+
+This design acknowledges a fundamental reality of AI systems today: agents can misinterpret context, hallucinate details, or make decisions that seem reasonable in isolation but cause real problems for real schedules. SchedLock provides the checkpoint that lets you confidently grant AI tools calendar access while maintaining meaningful control over what actually gets written.
 
 ![SchedLock Dashboard](https://images.disinfo.zone/uploads/Bkn7gnKuOtksjY0JDt586bMpk9heYvyEnOOaysi6.jpg)
 
@@ -9,7 +11,7 @@ A Calendar Proxy service that provides human-in-the-loop approval for AI agent c
 - **REST API** mirroring Google Calendar operations
 - **3-tier API key authentication** (read, write, admin)
 - **Human approval workflow** for write operations
-- **Multi-provider notifications** (ntfy, Pushover, Telegram)
+- **Multi-provider notifications** (ntfy, Pushover, Telegram, webhooks)
 - **Suggestion/change request** capability
 - **Web UI** for configuration and manual approvals
 - **Docker deployment** with SQLite persistence
@@ -154,6 +156,7 @@ POST /api/requests/{requestId}/cancel
 | `SCHEDLOCK_NTFY_ENABLED` | Enable ntfy notifications | No |
 | `SCHEDLOCK_PUSHOVER_ENABLED` | Enable Pushover notifications | No |
 | `SCHEDLOCK_TELEGRAM_ENABLED` | Enable Telegram notifications | No |
+| `SCHEDLOCK_WEBHOOK_ENABLED` | Enable generic webhook notifications | No |
 
 See `.env.example` for full configuration options.
 
@@ -192,6 +195,42 @@ SCHEDLOCK_TELEGRAM_BOT_TOKEN=123456:ABC...
 SCHEDLOCK_TELEGRAM_CHAT_ID=your-chat-id
 SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET=your-secret-token
 ```
+
+### Generic Webhook
+
+For custom integrations with home automation, monitoring systems, or services without native support:
+
+```env
+SCHEDLOCK_WEBHOOK_ENABLED=true
+SCHEDLOCK_WEBHOOK_URL=https://your-server.com/webhook
+SCHEDLOCK_WEBHOOK_SECRET=your-hmac-secret
+SCHEDLOCK_WEBHOOK_TIMEOUT=10
+```
+
+SchedLock sends JSON payloads to your webhook URL for each notification event:
+
+```json
+{
+  "event": "approval_request",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "request_id": "req_abc123",
+  "operation": "create_event",
+  "summary": "Team Meeting",
+  "expires_at": "2024-01-15T10:45:00Z",
+  "urls": {
+    "approve": "https://schedlock.example.com/api/callback/approve/token",
+    "deny": "https://schedlock.example.com/api/callback/deny/token",
+    "web": "https://schedlock.example.com/requests/req_abc123"
+  },
+  "details": {
+    "title": "Team Meeting",
+    "start_time": "2024-01-20T10:00:00-05:00",
+    "end_time": "2024-01-20T11:00:00-05:00"
+  }
+}
+```
+
+If you provide a secret, each request includes an HMAC-SHA256 signature in the `X-SchedLock-Signature` header. Verify by computing `HMAC-SHA256(secret, request_body)` and comparing the hex-encoded result.
 
 ## Security
 
