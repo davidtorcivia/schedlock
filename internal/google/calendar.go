@@ -221,13 +221,35 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, intent *EventUpdateInt
 		existing.Location = *intent.Location
 	}
 	if intent.Start != nil {
+		// Preserve existing TimeZone if set
+		tz := ""
+		if existing.Start != nil {
+			tz = existing.Start.TimeZone
+		}
 		existing.Start = &calendar.EventDateTime{
 			DateTime: intent.Start.Format(time.RFC3339),
+			TimeZone: tz,
 		}
 	}
 	if intent.End != nil {
+		// Preserve existing TimeZone if set
+		tz := ""
+		if existing.End != nil {
+			tz = existing.End.TimeZone
+		}
 		existing.End = &calendar.EventDateTime{
 			DateTime: intent.End.Format(time.RFC3339),
+			TimeZone: tz,
+		}
+	}
+
+	// Validate Start < End after partial updates
+	if existing.Start != nil && existing.End != nil &&
+		existing.Start.DateTime != "" && existing.End.DateTime != "" {
+		startTime, err1 := time.Parse(time.RFC3339, existing.Start.DateTime)
+		endTime, err2 := time.Parse(time.RFC3339, existing.End.DateTime)
+		if err1 == nil && err2 == nil && !startTime.Before(endTime) {
+			return nil, fmt.Errorf("start time must be before end time")
 		}
 	}
 	if len(intent.Attendees) > 0 {

@@ -2,6 +2,8 @@
 
 A Calendar Proxy service that provides human-in-the-loop approval for AI agent calendar operations.
 
+![SchedLock Dashboard](https://images.disinfo.zone/uploads/Bkn7gnKuOtksjY0JDt586bMpk9heYvyEnOOaysi6.jpg)
+
 ## Features
 
 - **REST API** mirroring Google Calendar operations
