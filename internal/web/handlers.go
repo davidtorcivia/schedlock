@@ -799,17 +799,20 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // NotificationConfigView holds notification config for template rendering.
 type NotificationConfigView struct {
-	Enabled  bool
-	Server   string
-	Topic    string
-	Token    string
-	Priority interface{} // string for ntfy, int for pushover
-	Sound    string
-	AppToken string
-	UserKey  string
-	BotToken string
-	ChatID   string
-	WebhookSecret string
+	Enabled        bool
+	Server         string
+	Topic          string
+	Token          string
+	Priority       interface{} // string for ntfy, int for pushover
+	Sound          string
+	AppToken       string
+	UserKey        string
+	BotToken       string
+	ChatID         string
+	WebhookSecret  string
+	URL            string // for generic webhook
+	Secret         string // for generic webhook HMAC
+	TimeoutSeconds int    // for generic webhook
 }
 
 // Settings shows settings page.
@@ -825,6 +828,7 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 	ntfyConfig := NotificationConfigView{Server: "https://ntfy.sh", Priority: "high"}
 	pushoverConfig := NotificationConfigView{Priority: 1, Sound: "pushover"}
 	telegramConfig := NotificationConfigView{}
+	webhookConfig := NotificationConfigView{TimeoutSeconds: 10}
 
 	// Load Google OAuth credentials
 	googleOAuthClientID := ""
@@ -855,6 +859,14 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 				telegramConfig.BotToken = tc.BotToken
 				telegramConfig.ChatID = tc.ChatID
 				telegramConfig.WebhookSecret = tc.WebhookSecret
+			}
+		}
+		if creds, _ := h.credentialsStore.Load(ctx, "webhook"); creds != nil {
+			webhookConfig.Enabled = creds.Enabled
+			if wc, ok := creds.Credentials.(*notifications.WebhookCredentials); ok && wc != nil {
+				webhookConfig.URL = wc.URL
+				webhookConfig.Secret = wc.Secret
+				webhookConfig.TimeoutSeconds = wc.TimeoutSeconds
 			}
 		}
 		// Load Google OAuth credentials
@@ -892,6 +904,12 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 		telegramConfig.ChatID = h.config.Notifications.Telegram.ChatID
 		telegramConfig.WebhookSecret = h.config.Notifications.Telegram.WebhookSecret
 	}
+	if !webhookConfig.Enabled && h.config.Notifications.Webhook.Enabled {
+		webhookConfig.Enabled = true
+		webhookConfig.URL = h.config.Notifications.Webhook.URL
+		webhookConfig.Secret = h.config.Notifications.Webhook.Secret
+		webhookConfig.TimeoutSeconds = h.config.Notifications.Webhook.TimeoutSeconds
+	}
 
 	// Check if approval PIN is configured
 	hasApprovalPIN := false
@@ -911,6 +929,7 @@ func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
 		"NtfyConfig":            ntfyConfig,
 		"PushoverConfig":        pushoverConfig,
 		"TelegramConfig":        telegramConfig,
+		"WebhookConfig":         webhookConfig,
 		"GoogleOAuthClientID":   googleOAuthClientID,
 		"GoogleOAuthConfigured": googleOAuthConfigured,
 		"HasApprovalPIN":        hasApprovalPIN,
@@ -992,6 +1011,33 @@ func (h *Handler) SaveNotificationSettings(w http.ResponseWriter, r *http.Reques
 		h.credentialsStore.Save(ctx, "telegram", false, &notifications.TelegramCredentials{})
 	}
 
+	// Save Webhook config
+	webhookEnabled := r.FormValue("webhook_enabled") == "on"
+	if webhookEnabled {
+		timeout, _ := strconv.Atoi(r.FormValue("webhook_timeout"))
+		if timeout <= 0 {
+			timeout = 10
+		}
+		if timeout > 60 {
+			timeout = 60
+		}
+		webhookCreds := &notifications.WebhookCredentials{
+			URL:            strings.TrimSpace(r.FormValue("webhook_url")),
+			Secret:         strings.TrimSpace(r.FormValue("webhook_secret")),
+			TimeoutSeconds: timeout,
+		}
+		if webhookCreds.URL == "" {
+			h.renderSettingsError(w, r, "Webhook URL is required when webhook is enabled")
+			return
+		}
+		if err := h.credentialsStore.Save(ctx, "webhook", true, webhookCreds); err != nil {
+			h.renderSettingsError(w, r, "failed to save Webhook credentials")
+			return
+		}
+	} else {
+		h.credentialsStore.Save(ctx, "webhook", false, &notifications.WebhookCredentials{})
+	}
+
 	// Audit log
 	if h.auditLogger != nil {
 		h.auditLogger.Log(ctx, database.AuditSettingsChanged, "", "", "web:admin", map[string]interface{}{
@@ -999,6 +1045,7 @@ func (h *Handler) SaveNotificationSettings(w http.ResponseWriter, r *http.Reques
 			"ntfy_enabled":                  ntfyEnabled,
 			"pushover_enabled":              pushoverEnabled,
 			"telegram_enabled":              telegramEnabled,
+			"webhook_enabled":               webhookEnabled,
 		})
 	}
 

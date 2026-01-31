@@ -17,6 +17,7 @@ import (
 	"github.com/dtorcivia/schedlock/internal/notifications/ntfy"
 	"github.com/dtorcivia/schedlock/internal/notifications/pushover"
 	"github.com/dtorcivia/schedlock/internal/notifications/telegram"
+	webhooknotify "github.com/dtorcivia/schedlock/internal/notifications/webhook"
 	"github.com/dtorcivia/schedlock/internal/requests"
 	"github.com/dtorcivia/schedlock/internal/server/middleware"
 	"github.com/dtorcivia/schedlock/internal/settings"
@@ -123,6 +124,8 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 		telegramProvider = telegram.NewProvider(&cfg.Notifications.Telegram)
 		notificationMgr.RegisterProvider(telegramProvider)
 	}
+	// Always register webhook provider (enabled state checked dynamically via credentials store)
+	notificationMgr.RegisterProvider(webhooknotify.NewProvider(&cfg.Notifications.Webhook))
 
 	// Set notification manager on engine
 	eng.SetNotifier(notificationMgr)

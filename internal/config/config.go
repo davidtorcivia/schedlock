@@ -108,11 +108,20 @@ type TelegramConfig struct {
 	AutoRegisterWebhook bool
 }
 
+// GenericWebhookConfig holds generic webhook notification settings.
+type GenericWebhookConfig struct {
+	Enabled        bool
+	URL            string
+	Secret         string // For HMAC-SHA256 signature
+	TimeoutSeconds int
+}
+
 // NotificationsConfig holds all notification provider settings.
 type NotificationsConfig struct {
 	Ntfy     NtfyConfig
 	Pushover PushoverConfig
 	Telegram TelegramConfig
+	Webhook  GenericWebhookConfig
 }
 
 // WebhookConfig holds Moltbot webhook settings.
@@ -216,7 +225,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate at least one notification provider is enabled or warn
-	if !c.Notifications.Ntfy.Enabled && !c.Notifications.Pushover.Enabled && !c.Notifications.Telegram.Enabled {
+	if !c.Notifications.Ntfy.Enabled && !c.Notifications.Pushover.Enabled && !c.Notifications.Telegram.Enabled && !c.Notifications.Webhook.Enabled {
 		// This is a warning, not an error - web UI still works
 		fmt.Println("Warning: No notification providers enabled. Approvals will only be available via Web UI.")
 	}
@@ -354,6 +363,10 @@ func defaultConfig() *Config {
 				WebhookPath:         "/webhooks/telegram",
 				AutoRegisterWebhook: true,
 			},
+			Webhook: GenericWebhookConfig{
+				Enabled:        false,
+				TimeoutSeconds: 10,
+			},
 		},
 		Moltbot: MoltbotConfig{
 			Webhook: WebhookConfig{
@@ -448,6 +461,11 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Notifications.Telegram.ChatID = getEnvAnyDefault(cfg.Notifications.Telegram.ChatID, "SCHEDLOCK_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID")
 	cfg.Notifications.Telegram.WebhookSecret = getEnvAnyDefault(cfg.Notifications.Telegram.WebhookSecret, "SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_WEBHOOK_SECRET")
 	cfg.Notifications.Telegram.AutoRegisterWebhook = getEnvBoolAny(cfg.Notifications.Telegram.AutoRegisterWebhook, "SCHEDLOCK_TELEGRAM_AUTO_REGISTER_WEBHOOK", "TELEGRAM_AUTO_REGISTER_WEBHOOK")
+
+	cfg.Notifications.Webhook.Enabled = getEnvBoolAny(cfg.Notifications.Webhook.Enabled, "SCHEDLOCK_WEBHOOK_ENABLED", "WEBHOOK_ENABLED")
+	cfg.Notifications.Webhook.URL = getEnvAnyDefault(cfg.Notifications.Webhook.URL, "SCHEDLOCK_WEBHOOK_URL", "WEBHOOK_URL")
+	cfg.Notifications.Webhook.Secret = getEnvAnyDefault(cfg.Notifications.Webhook.Secret, "SCHEDLOCK_WEBHOOK_SECRET", "WEBHOOK_SECRET")
+	cfg.Notifications.Webhook.TimeoutSeconds = getEnvIntAny(cfg.Notifications.Webhook.TimeoutSeconds, "SCHEDLOCK_WEBHOOK_TIMEOUT", "WEBHOOK_TIMEOUT")
 
 	cfg.Moltbot.Webhook.Enabled = getEnvBoolAny(cfg.Moltbot.Webhook.Enabled, "SCHEDLOCK_MOLTBOT_WEBHOOK_ENABLED", "MOLTBOT_WEBHOOK_ENABLED")
 	cfg.Moltbot.Webhook.URL = getEnvAnyDefault(cfg.Moltbot.Webhook.URL, "SCHEDLOCK_MOLTBOT_WEBHOOK_URL", "MOLTBOT_WEBHOOK_URL")

@@ -384,6 +384,85 @@
                 </div>
             </div>
 
+            <!-- Generic Webhook -->
+            <div class="provider-card">
+                <div class="provider-header">
+                    <div class="provider-title">
+                        <h5>Webhook</h5>
+                        <span class="provider-desc">Custom HTTP webhook for integrations</span>
+                    </div>
+                    <div class="form-check" style="margin: 0;">
+                        <input type="checkbox" id="webhook_enabled" name="webhook_enabled" class="form-check-input"
+                               {{if .WebhookConfig.Enabled}}checked{{end}}
+                               onchange="document.getElementById('webhook_fields').style.display = this.checked ? 'block' : 'none'">
+                        <label for="webhook_enabled" class="form-check-label">Enable</label>
+                    </div>
+                </div>
+                <div id="webhook_fields" style="{{if not .WebhookConfig.Enabled}}display: none;{{end}}">
+                    <details style="margin-bottom: var(--space-4); font-size: var(--text-sm);">
+                        <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+                            How to use webhooks
+                        </summary>
+                        <div style="margin-top: var(--space-3); color: var(--text-tertiary); line-height: 1.7;">
+                            <p style="margin-bottom: var(--space-3);">SchedLock will POST JSON to your URL for each notification event. Use this to integrate with custom systems, home automation, or services without native support.</p>
+
+                            <p style="font-weight: 500; color: var(--text-secondary); margin-bottom: var(--space-2);">Payload format:</p>
+                            <pre style="background: var(--bg-secondary); padding: var(--space-3); border-radius: 6px; font-size: var(--text-xs); overflow-x: auto; margin-bottom: var(--space-3);">{
+  "event": "approval_requested",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "request_id": "abc123",
+  "operation": "create_event",
+  "summary": "Team Meeting",
+  "details": "Calendar: primary, Time: ...",
+  "approve_url": "https://your-server/approve/abc123",
+  "deny_url": "https://your-server/deny/abc123"
+}</pre>
+
+                            <p style="font-weight: 500; color: var(--text-secondary); margin-bottom: var(--space-2);">Event types:</p>
+                            <ul style="padding-left: var(--space-5); margin-bottom: var(--space-3);">
+                                <li><code>approval_requested</code> — New request awaiting approval</li>
+                                <li><code>request_approved</code> — Request was approved</li>
+                                <li><code>request_denied</code> — Request was denied</li>
+                                <li><code>request_timeout</code> — Request expired</li>
+                                <li><code>test</code> — Test notification</li>
+                            </ul>
+
+                            <p style="font-weight: 500; color: var(--text-secondary); margin-bottom: var(--space-2);">Security (HMAC-SHA256):</p>
+                            <p style="margin-bottom: var(--space-2);">If you provide a secret, each request includes a signature header:</p>
+                            <pre style="background: var(--bg-secondary); padding: var(--space-3); border-radius: 6px; font-size: var(--text-xs); overflow-x: auto; margin-bottom: var(--space-3);">X-SchedLock-Signature: sha256=&lt;hex-encoded HMAC&gt;</pre>
+                            <p>Verify by computing <code>HMAC-SHA256(secret, request_body)</code> and comparing with the header value.</p>
+                        </div>
+                    </details>
+                    <div class="form-row">
+                        <div class="form-group" style="flex: 2;">
+                            <label class="form-label">Webhook URL <span style="color: var(--error-700);">*</span></label>
+                            <input type="url" name="webhook_url" value="{{.WebhookConfig.URL}}"
+                                   class="form-input" placeholder="https://your-server.com/webhook">
+                            <p class="form-hint">HTTP and local IPs allowed for self-hosted setups</p>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Secret <small>(optional)</small></label>
+                            <input type="password" name="webhook_secret" value="{{.WebhookConfig.Secret}}"
+                                   class="form-input" placeholder="your-secret-key">
+                            <p class="form-hint">For HMAC-SHA256 signature verification</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Timeout <small>(seconds)</small></label>
+                            <input type="number" name="webhook_timeout" value="{{if .WebhookConfig.TimeoutSeconds}}{{.WebhookConfig.TimeoutSeconds}}{{else}}10{{end}}"
+                                   class="form-input" min="1" max="60" placeholder="10">
+                            <p class="form-hint">Request timeout (1-60s)</p>
+                        </div>
+                    </div>
+                    {{if .WebhookConfig.Enabled}}
+                    <div class="mt-4">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="testProvider('webhook')">Send Test Notification</button>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
             <div class="flex justify-end">
                 <button type="submit" class="btn btn-primary">Save Notification Settings</button>
             </div>

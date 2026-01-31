@@ -55,6 +55,13 @@ type GoogleOAuthCredentials struct {
 	ClientSecret string `json:"client_secret"`
 }
 
+// WebhookCredentials holds generic webhook provider credentials.
+type WebhookCredentials struct {
+	URL            string `json:"url"`
+	Secret         string `json:"secret,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
 // ProviderCredentials holds the enabled state and credentials for a provider.
 type ProviderCredentials struct {
 	Provider    string
@@ -146,6 +153,12 @@ func (s *CredentialsStore) Load(ctx context.Context, provider string) (*Provider
 			return nil, fmt.Errorf("failed to unmarshal google_oauth credentials: %w", err)
 		}
 		result.Credentials = &creds
+	case "webhook":
+		var creds WebhookCredentials
+		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal webhook credentials: %w", err)
+		}
+		result.Credentials = &creds
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -202,6 +215,11 @@ func (s *CredentialsStore) LoadAll(ctx context.Context) (map[string]*ProviderCre
 				}
 			case "google_oauth":
 				var creds GoogleOAuthCredentials
+				if json.Unmarshal([]byte(decrypted), &creds) == nil {
+					pc.Credentials = &creds
+				}
+			case "webhook":
+				var creds WebhookCredentials
 				if json.Unmarshal([]byte(decrypted), &creds) == nil {
 					pc.Credentials = &creds
 				}
