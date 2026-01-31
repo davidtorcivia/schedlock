@@ -66,12 +66,15 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 	}
 
 	body.WriteString(fmt.Sprintf("\n<b>Expires:</b> %s\n\n", notification.ExpiresIn))
-	if notification.ApproveURL != "" && notification.DenyURL != "" {
-		body.WriteString(fmt.Sprintf("<a href=\"%s\">Approve</a> | ", notification.ApproveURL))
-		body.WriteString(fmt.Sprintf("<a href=\"%s\">Deny</a> | ", notification.DenyURL))
+	// Use public approval page for browser links
+	if notification.ApprovePageURL != "" {
+		body.WriteString(fmt.Sprintf("<a href=\"%s\">Review & Approve</a>", notification.ApprovePageURL))
 	}
-	if notification.WebURL != "" {
-		body.WriteString(fmt.Sprintf("<a href=\"%s\">Review</a>", notification.WebURL))
+
+	// Main URL points to public approval page for one-tap action
+	mainURL := notification.ApprovePageURL
+	if mainURL == "" {
+		mainURL = notification.WebURL
 	}
 
 	params := url.Values{
@@ -81,8 +84,8 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 		"message":   {body.String()},
 		"html":      {"1"},
 		"priority":  {"1"}, // High priority
-		"url":       {notification.WebURL},
-		"url_title": {"Open in SchedLock"},
+		"url":       {mainURL},
+		"url_title": {"Review & Decide"},
 	}
 
 	return p.send(ctx, params)

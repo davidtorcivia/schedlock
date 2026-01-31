@@ -124,7 +124,12 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 			},
 		},
 	}
-	if notification.WebURL != "" {
+	// Add link to public approval page (works without login)
+	if notification.ApprovePageURL != "" {
+		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, []InlineKeyboardButton{
+			{Text: "View Details", URL: notification.ApprovePageURL},
+		})
+	} else if notification.WebURL != "" {
 		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, []InlineKeyboardButton{
 			{Text: "View Details", URL: notification.WebURL},
 		})

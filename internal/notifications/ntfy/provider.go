@@ -89,13 +89,18 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 
 	body.WriteString(fmt.Sprintf("\nExpires: %s", notification.ExpiresIn))
 
+	// Use public approval page for click action (opens in browser)
+	clickURL := notification.ApprovePageURL
+	if clickURL == "" {
+		clickURL = notification.WebURL
+	}
+
 	msg := ntfyMessage{
 		Topic:    p.config.Topic,
 		Title:    title,
 		Message:  body.String(),
 		Priority: mapPriority(p.config.Priority),
-		Tags:     []string{"calendar", "approval"},
-		Click:    notification.WebURL,
+		Click:    clickURL,
 	}
 
 	if notification.ApproveURL != "" && notification.DenyURL != "" {
@@ -116,11 +121,16 @@ func (p *Provider) SendApproval(ctx context.Context, notification *notifications
 			},
 		}
 	}
-	if notification.WebURL != "" {
+	// Add Review button linking to public approval page
+	reviewURL := notification.ApprovePageURL
+	if reviewURL == "" {
+		reviewURL = notification.WebURL
+	}
+	if reviewURL != "" {
 		msg.Actions = append(msg.Actions, ntfyAction{
 			Action: "view",
 			Label:  "Review",
-			URL:    notification.WebURL,
+			URL:    reviewURL,
 		})
 	}
 
@@ -135,22 +145,18 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 
 	switch notification.Status {
 	case "completed":
-		title = fmt.Sprintf("%s Completed", notification.Operation)
-		tags = []string{"white_check_mark", "calendar"}
+		title = fmt.Sprintf("[OK] %s Completed", notification.Operation)
 	case "failed":
-		title = fmt.Sprintf("%s Failed", notification.Operation)
-		tags = []string{"x", "calendar"}
+		title = fmt.Sprintf("[FAILED] %s Failed", notification.Operation)
 		priority = 4
 	case "denied":
-		title = fmt.Sprintf("%s Denied", notification.Operation)
-		tags = []string{"no_entry", "calendar"}
+		title = fmt.Sprintf("[DENIED] %s Denied", notification.Operation)
 	case "expired":
-		title = fmt.Sprintf("%s Expired", notification.Operation)
-		tags = []string{"alarm_clock", "calendar"}
+		title = fmt.Sprintf("[EXPIRED] %s Expired", notification.Operation)
 	default:
 		title = fmt.Sprintf("%s: %s", notification.Operation, notification.Status)
-		tags = []string{"calendar"}
 	}
+	tags = nil
 
 	msg := ntfyMessage{
 		Topic:    p.config.Topic,
@@ -172,10 +178,9 @@ func (p *Provider) SendResult(ctx context.Context, notification *notifications.R
 func (p *Provider) SendTest(ctx context.Context) error {
 	msg := ntfyMessage{
 		Topic:    p.config.Topic,
-		Title:    "SchedLock Test",
+		Title:    "[TEST] SchedLock Test",
 		Message:  "This is a test notification from SchedLock. If you can see this, ntfy is configured correctly.",
 		Priority: 3,
-		Tags:     []string{"test_tube", "calendar"},
 	}
 
 	_, err := p.send(ctx, &msg)
