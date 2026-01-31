@@ -1764,6 +1764,104 @@ pre code {
    Print Styles
    -------------------------------------------------------------------------- */
 
+/* --------------------------------------------------------------------------
+   Mobile Responsive Overrides
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  /* Hide theme toggle on small screens to save space */
+  .theme-toggle {
+    display: none;
+  }
+
+  /* Shrink header brand */
+  .app-brand {
+    font-size: var(--text-lg);
+  }
+
+  /* Page header adjustments */
+  .page-header h1 {
+    font-size: var(--text-2xl);
+  }
+
+  .page-header p {
+    font-size: var(--text-sm);
+  }
+
+  /* Card-based table for mobile */
+  .table-mobile-cards .table {
+    display: none;
+  }
+
+  .table-mobile-cards .mobile-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .mobile-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: var(--space-4);
+  }
+
+  .mobile-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .mobile-card-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    word-break: break-all;
+  }
+
+  .mobile-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--space-4);
+  }
+
+  .mobile-card-meta-row {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .mobile-card-meta-label {
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wider);
+  }
+
+  .mobile-card-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .mobile-card-actions .btn {
+    flex: 1;
+    min-width: 0;
+    justify-content: center;
+  }
+}
+
+@media (min-width: 641px) {
+  /* Hide mobile cards on desktop */
+  .mobile-cards {
+    display: none !important;
+  }
+}
+
 @media print {
   .app-header,
   .app-nav,
@@ -1772,12 +1870,12 @@ pre code {
   .theme-toggle {
     display: none !important;
   }
-  
+
   body {
     background: white;
     color: black;
   }
-  
+
   .card {
     box-shadow: none;
     border: 1px solid #ccc;

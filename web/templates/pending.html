@@ -5,7 +5,8 @@
 </div>
 
 {{if .Requests}}
-<div class="card animate-fade-in-scale">
+<div class="card animate-fade-in-scale table-mobile-cards">
+    <!-- Desktop table view -->
     <div class="table-container">
         <table class="table">
             <thead>
@@ -47,6 +48,41 @@
                 {{end}}
             </tbody>
         </table>
+    </div>
+
+    <!-- Mobile card view -->
+    <div class="mobile-cards">
+        {{range .Requests}}
+        <div class="mobile-card">
+            <div class="mobile-card-header">
+                <a href="/requests/{{.ID}}" class="mobile-card-id">{{.ID}}</a>
+                <span class="badge badge-primary">{{.Operation}}</span>
+            </div>
+            <div class="mobile-card-meta">
+                <div class="mobile-card-meta-row">
+                    <span class="mobile-card-meta-label">Created</span>
+                    <span>{{formatTime .CreatedAt}}</span>
+                </div>
+                <div class="mobile-card-meta-row">
+                    <span class="mobile-card-meta-label">Expires</span>
+                    <span>{{formatTime .ExpiresAt}}</span>
+                </div>
+            </div>
+            <div class="mobile-card-actions">
+                <form action="/requests/{{.ID}}/approve" method="POST"
+                      hx-post="/requests/{{.ID}}/approve" hx-swap="none">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                </form>
+                <form action="/requests/{{.ID}}/deny" method="POST"
+                      hx-post="/requests/{{.ID}}/deny" hx-swap="none">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                </form>
+                <a href="/requests/{{.ID}}" class="btn btn-secondary btn-sm">Details</a>
+            </div>
+        </div>
+        {{end}}
     </div>
 </div>
 {{else}}

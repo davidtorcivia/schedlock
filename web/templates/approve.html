@@ -5,19 +5,36 @@
     </div>
 
     {{if .Error}}
-    <div class="approve-card approve-card-error">
-        <div class="approve-icon approve-icon-error">!</div>
-        <h2>{{.ErrorTitle}}</h2>
-        <p>{{.Error}}</p>
+    <div class="approve-card approve-card-result">
+        <div class="approve-result-icon approve-result-error">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+            </svg>
+        </div>
+        <h2 class="approve-result-title">{{.ErrorTitle}}</h2>
+        <p class="approve-result-message">{{.Error}}</p>
         {{if .ShowLoginLink}}
-        <a href="/login" class="btn btn-primary" style="margin-top: var(--space-4);">Sign In</a>
+        <a href="/login" class="btn btn-primary">Sign In</a>
         {{end}}
     </div>
     {{else if .Success}}
-    <div class="approve-card approve-card-success">
-        <div class="approve-icon approve-icon-success">{{if eq .Action "approve"}}OK{{else}}X{{end}}</div>
-        <h2>Request {{if eq .Action "approve"}}Approved{{else}}Denied{{end}}</h2>
-        <p>{{.Message}}</p>
+    <div class="approve-card approve-card-result">
+        {{if eq .Action "approve"}}
+        <div class="approve-result-icon approve-result-success">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+        </div>
+        {{else}}
+        <div class="approve-result-icon approve-result-denied">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+            </svg>
+        </div>
+        {{end}}
+        <h2 class="approve-result-title">Request {{if eq .Action "approve"}}Approved{{else}}Denied{{end}}</h2>
+        <p class="approve-result-message">{{.Message}}</p>
+        <a href="/" class="btn btn-secondary">Go to Dashboard</a>
     </div>
     {{else}}
     <div class="approve-card">
@@ -138,33 +155,54 @@
     overflow: hidden;
 }
 
-.approve-card-error,
-.approve-card-success {
+.approve-card-result {
     text-align: center;
     padding: var(--space-8) var(--space-6);
 }
 
-.approve-icon {
-    width: 64px;
-    height: 64px;
+.approve-result-icon {
+    width: 72px;
+    height: 72px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin: 0 auto var(--space-4);
-    font-family: var(--font-sans);
-    font-weight: 600;
-    font-size: var(--text-lg);
+    margin: 0 auto var(--space-5);
 }
 
-.approve-icon-error {
+.approve-result-icon svg {
+    width: 36px;
+    height: 36px;
+}
+
+.approve-result-success {
+    background: var(--success-100);
+    color: var(--success-700);
+}
+
+.approve-result-denied {
+    background: var(--warning-100);
+    color: var(--warning-700);
+}
+
+.approve-result-error {
     background: var(--error-100);
     color: var(--error-700);
 }
 
-.approve-icon-success {
-    background: var(--success-100);
-    color: var(--success-700);
+.approve-result-title {
+    font-size: var(--text-xl);
+    margin-bottom: var(--space-2);
+}
+
+.approve-result-message {
+    color: var(--text-secondary);
+    margin-bottom: var(--space-5);
+    line-height: var(--leading-relaxed);
+}
+
+.approve-card-result .btn {
+    margin-top: var(--space-2);
 }
 
 .approve-card-error h2,
