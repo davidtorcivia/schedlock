@@ -55,6 +55,10 @@ This design acknowledges a fundamental reality of AI systems today: agents can m
    - Go to API Keys in the web UI
    - Create a "write" tier key for your AI agent
 
+6. **Set up agent SKILL.md**
+   - Direct your agent to https://yoururl.tld/SKILL.md
+   - Provide agent with your api key
+
 ### Manual Configuration (Advanced)
 
 If you prefer to configure manually instead of using the setup wizard:
