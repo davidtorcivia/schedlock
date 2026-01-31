@@ -2,11 +2,15 @@
 package server
 
 import (
+	_ "embed"
 	"encoding/json"
 	"net/http"
 
 	"github.com/dtorcivia/schedlock/internal/server/middleware"
 )
+
+//go:embed SKILL.md
+var skillMD []byte
 
 // setupRoutes registers all HTTP routes.
 func (s *Server) setupRoutes() {
@@ -32,7 +36,8 @@ func (s *Server) setupRoutes() {
 
 	// SKILL.md for agent discovery
 	s.router.HandleFunc("GET /SKILL.md", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "skills/calendar-proxy/SKILL.md")
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Write(skillMD)
 	})
 
 	// Static files
