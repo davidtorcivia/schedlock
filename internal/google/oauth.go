@@ -65,7 +65,11 @@ func (m *OAuthManager) SetCredentialStore(store *notifications.CredentialsStore)
 func (m *OAuthManager) UpdateCredentials(clientID, clientSecret string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateCredentialsLocked(clientID, clientSecret)
+}
 
+// updateCredentialsLocked is the internal version that assumes the lock is held.
+func (m *OAuthManager) updateCredentialsLocked(clientID, clientSecret string) {
 	// Always use current baseURL for redirect URI
 	redirectURL := m.baseURL + "/oauth/callback"
 
@@ -111,6 +115,27 @@ func (m *OAuthManager) loadCredentialsFromDB() error {
 	}
 
 	m.UpdateCredentials(oauthCreds.ClientID, oauthCreds.ClientSecret)
+	return nil
+}
+
+// loadCredentialsFromDBLocked is the internal version that assumes the lock is held.
+func (m *OAuthManager) loadCredentialsFromDBLocked() error {
+	if m.credStore == nil {
+		return fmt.Errorf("no credential store configured")
+	}
+
+	ctx := context.Background()
+	creds, err := m.credStore.Load(ctx, "google_oauth")
+	if err != nil || creds == nil || creds.Credentials == nil {
+		return fmt.Errorf("no credentials found")
+	}
+
+	oauthCreds, ok := creds.Credentials.(*notifications.GoogleOAuthCredentials)
+	if !ok || oauthCreds.ClientID == "" {
+		return fmt.Errorf("invalid credentials")
+	}
+
+	m.updateCredentialsLocked(oauthCreds.ClientID, oauthCreds.ClientSecret)
 	return nil
 }
 
@@ -228,6 +253,14 @@ func (m *OAuthManager) GetValidToken(ctx context.Context) (*oauth2.Token, error)
 	if token.Expiry.Before(time.Now().Add(5 * time.Minute)) {
 		util.Info("Access token expired or expiring, refreshing...")
 
+		// Ensure credentials are loaded before refresh
+		if m.config.ClientID == "" && m.credStore != nil {
+			util.Debug("ClientID empty, attempting to load from credential store")
+			if err := m.loadCredentialsFromDBLocked(); err != nil {
+				util.Warn("Failed to load credentials from DB", "error", err)
+			}
+		}
+
 		newToken, err := m.refreshToken(ctx, token)
 		if err != nil {
 			// Log the failure - this is critical
@@ -257,6 +290,13 @@ func (m *OAuthManager) GetValidToken(ctx context.Context) (*oauth2.Token, error)
 
 // refreshToken refreshes an expired token.
 func (m *OAuthManager) refreshToken(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
+	// Debug: log OAuth config state
+	util.Debug("Token refresh attempt",
+		"client_id_set", m.config.ClientID != "",
+		"client_secret_set", m.config.ClientSecret != "",
+		"redirect_url", m.config.RedirectURL,
+	)
+
 	tokenSource := m.config.TokenSource(ctx, token)
 	return tokenSource.Token()
 }
