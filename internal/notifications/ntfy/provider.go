@@ -62,7 +62,7 @@ type ntfyAction struct {
 
 // SendApproval sends an approval request notification.
 func (p *Provider) SendApproval(ctx context.Context, notification *notifications.ApprovalNotification) (string, error) {
-	title := fmt.Sprintf("Calendar: %s", notification.Summary)
+	title := fmt.Sprintf("[Approval] %s", notification.Summary)
 
 	var body strings.Builder
 	if p.config.MinimalContent {

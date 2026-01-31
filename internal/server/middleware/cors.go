@@ -3,23 +3,31 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 )
 
 // CORS returns middleware that handles Cross-Origin Resource Sharing.
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only allow same-origin requests by default
-		// The proxy is primarily accessed by Moltbot (server-side) and the web UI (same origin)
 		origin := r.Header.Get("Origin")
+		path := r.URL.Path
 
-		// If no origin header, it's a same-origin request or non-browser client
-		if origin != "" {
-			// For API requests, we could allow specific origins
-			// For now, we don't set CORS headers (same-origin only)
+		// Allow CORS for callback endpoints (used by ntfy, pushover, etc.)
+		// These endpoints are called by notification service clients
+		if origin != "" && strings.HasPrefix(path, "/api/callback/") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 		}
 
 		// Handle preflight requests
 		if r.Method == http.MethodOptions {
+			if strings.HasPrefix(path, "/api/callback/") {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			// For non-callback paths, return 204 but without CORS headers
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

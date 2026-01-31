@@ -174,7 +174,12 @@ func (l *Logger) logJSON(level LogLevel, msg string, fields map[string]interface
 	}
 
 	for k, v := range fields {
-		entry[k] = v
+		// Convert errors to strings to avoid JSON marshal issues
+		if err, ok := v.(error); ok {
+			entry[k] = err.Error()
+		} else {
+			entry[k] = v
+		}
 	}
 
 	data, err := json.Marshal(entry)
