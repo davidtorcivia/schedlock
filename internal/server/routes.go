@@ -30,6 +30,11 @@ func (s *Server) setupRoutes() {
 	// Web UI routes
 	s.webHandler.RegisterRoutes(s.router)
 
+	// SKILL.md for agent discovery
+	s.router.HandleFunc("GET /SKILL.md", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "skills/calendar-proxy/SKILL.md")
+	})
+
 	// Static files
 	s.router.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 }
