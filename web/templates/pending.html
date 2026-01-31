@@ -25,7 +25,12 @@
                         <a href="/requests/{{.ID}}">{{.ID}}</a>
                     </td>
                     <td>
-                        <span class="badge badge-primary">{{.Operation}}</span>
+                        <span class="badge badge-primary">
+                            {{if eq .Operation "create_event"}}Create Event
+                            {{else if eq .Operation "update_event"}}Update Event
+                            {{else if eq .Operation "delete_event"}}Delete Event
+                            {{else}}{{.Operation}}{{end}}
+                        </span>
                     </td>
                     <td>{{formatTime .CreatedAt}}</td>
                     <td>{{formatTime .ExpiresAt}}</td>
@@ -56,7 +61,12 @@
         <div class="mobile-card">
             <div class="mobile-card-header">
                 <a href="/requests/{{.ID}}" class="mobile-card-id">{{.ID}}</a>
-                <span class="badge badge-primary">{{.Operation}}</span>
+                <span class="badge badge-primary">
+                    {{if eq .Operation "create_event"}}Create Event
+                    {{else if eq .Operation "update_event"}}Update Event
+                    {{else if eq .Operation "delete_event"}}Delete Event
+                    {{else}}{{.Operation}}{{end}}
+                </span>
             </div>
             <div class="mobile-card-meta">
                 <div class="mobile-card-meta-row">

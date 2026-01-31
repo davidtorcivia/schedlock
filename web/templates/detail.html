@@ -23,6 +23,17 @@
                 {{.Request.Status}}
             </span>
         </div>
+        <p style="margin-top: var(--space-3); color: var(--text-secondary); line-height: var(--leading-relaxed);">
+            {{if eq .Request.Operation "create_event"}}
+            An AI agent wants to <strong style="color: var(--accent);">create a new calendar event</strong>{{if .EventData}}{{if .EventData.Summary}} called "{{.EventData.Summary}}"{{end}}{{end}}.
+            {{else if eq .Request.Operation "update_event"}}
+            An AI agent wants to <strong style="color: var(--accent);">modify an existing calendar event</strong>{{if .EventData}}{{if .EventData.Summary}} ("{{.EventData.Summary}}"){{end}}{{end}}.
+            {{else if eq .Request.Operation "delete_event"}}
+            An AI agent wants to <strong style="color: var(--accent);">delete a calendar event</strong>{{if .EventData}}{{if .EventData.Summary}} called "{{.EventData.Summary}}"{{end}}{{end}}.
+            {{else}}
+            An AI agent wants to perform a calendar operation.
+            {{end}}
+        </p>
     </div>
     <div class="card-body">
         <dl class="dl-grid mb-8">

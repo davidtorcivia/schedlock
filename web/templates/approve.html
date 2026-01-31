@@ -40,7 +40,17 @@
     <div class="approve-card">
         <div class="approve-header">
             <span class="badge badge-primary">Pending Approval</span>
-            <h2>{{.Request.Operation}}</h2>
+            <p class="approve-summary">
+                {{if eq .Request.Operation "create_event"}}
+                An AI agent is requesting to <strong>create a new calendar event</strong>{{if .EventDetails.Title}} called "{{.EventDetails.Title}}"{{end}}.
+                {{else if eq .Request.Operation "update_event"}}
+                An AI agent is requesting to <strong>modify an existing calendar event</strong>{{if .EventDetails.Title}} ("{{.EventDetails.Title}}"){{end}}.
+                {{else if eq .Request.Operation "delete_event"}}
+                An AI agent is requesting to <strong>delete a calendar event</strong>{{if .EventDetails.Title}} called "{{.EventDetails.Title}}"{{end}}.
+                {{else}}
+                An AI agent is requesting to perform a calendar operation.
+                {{end}}
+            </p>
             <p class="approve-expires">Expires {{.ExpiresIn}}</p>
         </div>
 
@@ -222,9 +232,15 @@
     text-align: center;
 }
 
-.approve-header h2 {
-    margin: var(--space-3) 0 var(--space-2);
-    text-transform: capitalize;
+.approve-summary {
+    font-size: var(--text-base);
+    color: var(--text-primary);
+    line-height: var(--leading-relaxed);
+    margin: var(--space-4) 0 var(--space-3);
+}
+
+.approve-summary strong {
+    color: var(--accent);
 }
 
 .approve-expires {
