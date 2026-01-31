@@ -167,6 +167,7 @@ func (m *Manager) populateApprovalURLs(notification *ApprovalNotification) {
 		return
 	}
 
+	// API callback URLs (for background HTTP actions like ntfy)
 	if notification.ApproveURL == "" {
 		notification.ApproveURL = fmt.Sprintf("%s/api/callback/approve/%s", baseURL, notification.DecisionToken)
 	}
@@ -175,6 +176,10 @@ func (m *Manager) populateApprovalURLs(notification *ApprovalNotification) {
 	}
 	if notification.SuggestURL == "" {
 		notification.SuggestURL = fmt.Sprintf("%s/api/callback/suggest/%s", baseURL, notification.DecisionToken)
+	}
+	// Public approval page URL (for browser links like Pushover)
+	if notification.ApprovePageURL == "" {
+		notification.ApprovePageURL = fmt.Sprintf("%s/approve/%s", baseURL, notification.DecisionToken)
 	}
 }
 

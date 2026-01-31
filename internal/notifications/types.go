@@ -7,16 +7,17 @@ import (
 
 // ApprovalNotification contains data for sending approval notifications.
 type ApprovalNotification struct {
-	RequestID   string
-	Operation   string
-	Summary     string
-	Details     *EventDetails
-	ApproveURL  string
-	DenyURL     string
-	SuggestURL  string
-	WebURL      string
-	ExpiresAt   time.Time
-	ExpiresIn   string
+	RequestID     string
+	Operation     string
+	Summary       string
+	Details       *EventDetails
+	ApproveURL    string // API callback URL (for background HTTP actions)
+	DenyURL       string // API callback URL (for background HTTP actions)
+	SuggestURL    string // API callback URL (for background HTTP actions)
+	ApprovePageURL string // Public web page URL (for browser links)
+	WebURL        string // Authenticated web UI URL
+	ExpiresAt     time.Time
+	ExpiresIn     string
 	DecisionToken string
 }
 

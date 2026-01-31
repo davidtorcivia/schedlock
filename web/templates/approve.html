@@ -1,0 +1,265 @@
+{{define "content"}}
+<div class="approve-page">
+    <div class="approve-brand">
+        <span>SchedLock</span>
+    </div>
+
+    {{if .Error}}
+    <div class="approve-card approve-card-error">
+        <div class="approve-icon approve-icon-error">!</div>
+        <h2>{{.ErrorTitle}}</h2>
+        <p>{{.Error}}</p>
+        {{if .ShowLoginLink}}
+        <a href="/login" class="btn btn-primary" style="margin-top: var(--space-4);">Sign In</a>
+        {{end}}
+    </div>
+    {{else if .Success}}
+    <div class="approve-card approve-card-success">
+        <div class="approve-icon approve-icon-success">{{if eq .Action "approve"}}OK{{else}}X{{end}}</div>
+        <h2>Request {{if eq .Action "approve"}}Approved{{else}}Denied{{end}}</h2>
+        <p>{{.Message}}</p>
+    </div>
+    {{else}}
+    <div class="approve-card">
+        <div class="approve-header">
+            <span class="badge badge-primary">Pending Approval</span>
+            <h2>{{.Request.Operation}}</h2>
+            <p class="approve-expires">Expires {{.ExpiresIn}}</p>
+        </div>
+
+        <div class="approve-details">
+            {{if .EventDetails.Title}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Event</span>
+                <span class="approve-detail-value">{{.EventDetails.Title}}</span>
+            </div>
+            {{end}}
+            {{if .EventDetails.StartTime}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">When</span>
+                <span class="approve-detail-value">{{.EventDetails.StartTime}}</span>
+            </div>
+            {{end}}
+            {{if .EventDetails.Location}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Where</span>
+                <span class="approve-detail-value">{{.EventDetails.Location}}</span>
+            </div>
+            {{end}}
+            {{if .EventDetails.Description}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Description</span>
+                <span class="approve-detail-value">{{.EventDetails.Description}}</span>
+            </div>
+            {{end}}
+            {{if .EventDetails.Attendees}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Attendees</span>
+                <span class="approve-detail-value">{{.EventDetails.Attendees}}</span>
+            </div>
+            {{end}}
+        </div>
+
+        <div class="approve-actions">
+            <form action="/approve/{{.Token}}" method="POST" class="approve-form">
+                <input type="hidden" name="action" value="approve">
+                <button type="submit" class="btn btn-success btn-lg">Approve</button>
+            </form>
+            <form action="/approve/{{.Token}}" method="POST" class="approve-form">
+                <input type="hidden" name="action" value="deny">
+                <button type="submit" class="btn btn-danger btn-lg">Deny</button>
+            </form>
+        </div>
+
+        <div class="approve-footer">
+            <a href="/login?redirect=/requests/{{.Request.ID}}" class="approve-link">Sign in for more details</a>
+        </div>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.approve-page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    background: var(--bg-canvas);
+}
+
+.approve-brand {
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: var(--space-6);
+}
+
+.approve-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg);
+    width: 100%;
+    max-width: 420px;
+    overflow: hidden;
+}
+
+.approve-card-error,
+.approve-card-success {
+    text-align: center;
+    padding: var(--space-8) var(--space-6);
+}
+
+.approve-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto var(--space-4);
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: var(--text-lg);
+}
+
+.approve-icon-error {
+    background: var(--error-100);
+    color: var(--error-700);
+}
+
+.approve-icon-success {
+    background: var(--success-100);
+    color: var(--success-700);
+}
+
+.approve-card-error h2,
+.approve-card-success h2 {
+    margin-bottom: var(--space-2);
+}
+
+.approve-card-error p,
+.approve-card-success p {
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.approve-header {
+    padding: var(--space-6);
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: center;
+}
+
+.approve-header h2 {
+    margin: var(--space-3) 0 var(--space-2);
+    text-transform: capitalize;
+}
+
+.approve-expires {
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    margin: 0;
+}
+
+.approve-details {
+    padding: var(--space-4) var(--space-6);
+}
+
+.approve-detail-row {
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.approve-detail-row:last-child {
+    border-bottom: none;
+}
+
+.approve-detail-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-tertiary);
+    margin-bottom: var(--space-1);
+}
+
+.approve-detail-value {
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.approve-actions {
+    display: flex;
+    gap: var(--space-3);
+    padding: var(--space-6);
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.approve-form {
+    flex: 1;
+}
+
+.approve-form .btn {
+    width: 100%;
+}
+
+.btn-lg {
+    padding: var(--space-3) var(--space-6);
+    font-size: var(--text-base);
+}
+
+.approve-footer {
+    padding: var(--space-4) var(--space-6);
+    text-align: center;
+    background: var(--bg-secondary);
+}
+
+.approve-link {
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    text-decoration: none;
+}
+
+.approve-link:hover {
+    color: var(--accent);
+}
+
+/* Mobile optimizations */
+@media (max-width: 480px) {
+    .approve-page {
+        padding: var(--space-3);
+        justify-content: flex-start;
+        padding-top: var(--space-8);
+    }
+
+    .approve-card {
+        max-width: 100%;
+    }
+
+    .approve-header {
+        padding: var(--space-5);
+    }
+
+    .approve-details {
+        padding: var(--space-3) var(--space-5);
+    }
+
+    .approve-actions {
+        flex-direction: column;
+        padding: var(--space-4) var(--space-5);
+    }
+
+    .approve-footer {
+        padding: var(--space-3) var(--space-5);
+    }
+}
+</style>
+{{end}}
+
+{{template "approve-layout" .}}

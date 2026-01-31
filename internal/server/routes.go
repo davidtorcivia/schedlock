@@ -18,6 +18,14 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /health", s.handleHealth)
 	s.router.HandleFunc("GET /api/health", s.handleHealth)
 
+	// Callback routes (token-based auth, no API key required)
+	// These must be registered before the authenticated /api/* handler
+	s.router.HandleFunc("POST /api/callback/approve/{token}", s.apiHandler.ApproveCallback)
+	s.router.HandleFunc("POST /api/callback/deny/{token}", s.apiHandler.DenyCallback)
+	s.router.HandleFunc("POST /api/callback/suggest/{token}", s.apiHandler.SuggestCallback)
+	s.router.HandleFunc("GET /api/callback/approve/{token}", s.apiHandler.ApproveCallback)
+	s.router.HandleFunc("GET /api/callback/deny/{token}", s.apiHandler.DenyCallback)
+
 	// API routes with API key authentication
 	apiMux := http.NewServeMux()
 	s.apiHandler.RegisterRoutes(apiMux)

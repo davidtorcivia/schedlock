@@ -12,6 +12,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /logout", h.Logout)
 	mux.Handle("POST /logout", CSRFProtection(http.HandlerFunc(h.Logout)))
 
+	// Public approval page (token-based auth, no session required)
+	mux.HandleFunc("GET /approve/{token}", h.PublicApprove)
+	mux.HandleFunc("POST /approve/{token}", h.PublicApprove)
+
 	// OAuth callback (special case - might need session or might be headless)
 	mux.HandleFunc("GET /oauth/callback", h.OAuthCallback)
 	mux.HandleFunc("POST /oauth/callback", h.OAuthCallback)

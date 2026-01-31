@@ -157,6 +157,46 @@ func loadTemplates(dir string) (*template.Template, error) {
 		"oauth_not_configured.html", "setup.html", "setup_complete.html",
 	}
 
+	// Standalone approve page with its own minimal layout
+	approveLayoutStr := `{{define "approve-layout"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="system">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} - SchedLock</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    {{template "content-approve.html" .}}
+    <script>
+        (function() {
+            const html = document.documentElement;
+            const savedTheme = localStorage.getItem('schedlock-theme') || 'system';
+            html.setAttribute('data-theme', savedTheme);
+        })();
+    </script>
+</body>
+</html>
+{{end}}`
+	if _, err := root.Parse(approveLayoutStr); err != nil {
+		return nil, fmt.Errorf("failed to parse approve layout: %w", err)
+	}
+
+	// Load approve.html separately with content-approve.html naming
+	approvePath := filepath.Join(dir, "approve.html")
+	if approveContent, err := os.ReadFile(approvePath); err == nil {
+		approveStr := string(approveContent)
+		approveStr = strings.Replace(approveStr, `{{template "approve-layout" .}}`, "", 1)
+		approveStr = strings.Replace(approveStr, `{{define "content"}}`, `{{define "content-approve.html"}}`, 1)
+		if _, err := root.Parse(approveStr); err != nil {
+			return nil, fmt.Errorf("failed to parse approve.html: %w", err)
+		}
+	}
+
 	for _, page := range pageFiles {
 		pagePath := filepath.Join(dir, page)
 		pageContent, err := os.ReadFile(pagePath)
@@ -1050,4 +1090,216 @@ func (h *Handler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?oauth=success", http.StatusSeeOther)
+}
+
+// PublicApprove handles the public approval page (GET shows form, POST processes action).
+func (h *Handler) PublicApprove(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	if token == "" {
+		h.renderApproveError(w, "Invalid Link", "No approval token provided.", false)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Handle POST (approval/denial action)
+	if r.Method == http.MethodPost {
+		action := r.FormValue("action")
+		if action != "approve" && action != "deny" {
+			h.renderApproveError(w, "Invalid Action", "Please use the approve or deny buttons.", false)
+			return
+		}
+
+		// Consume token and process
+		requestID, err := h.tokenRepo.Consume(ctx, token, action)
+		if err != nil {
+			h.renderApproveError(w, "Link Expired or Used", err.Error(), false)
+			return
+		}
+
+		// Process the approval/denial
+		if err := h.engine.ProcessApproval(ctx, requestID, action, "link"); err != nil {
+			h.renderApproveError(w, "Processing Failed", err.Error(), false)
+			return
+		}
+
+		// Show success
+		message := "The calendar request has been approved and will be processed."
+		if action == "deny" {
+			message = "The calendar request has been denied."
+		}
+
+		h.renderApprove(w, "approve-layout", map[string]interface{}{
+			"Title":   "Request " + strings.Title(action) + "d",
+			"Success": true,
+			"Action":  action,
+			"Message": message,
+		})
+		return
+	}
+
+	// GET - validate token and show approval form
+	result, err := h.tokenRepo.Validate(ctx, token)
+	if err != nil {
+		h.renderApproveError(w, "Error", "Unable to validate approval link.", false)
+		return
+	}
+
+	if !result.Valid {
+		h.renderApproveError(w, "Link Expired or Used", result.Error, false)
+		return
+	}
+
+	// Get request details
+	req, err := h.requestRepo.GetByID(ctx, result.RequestID)
+	if err != nil || req == nil {
+		h.renderApproveError(w, "Request Not Found", "The associated request could not be found.", false)
+		return
+	}
+
+	// Check if request is still pending
+	if req.Status != "pending_approval" {
+		h.renderApproveError(w, "Already Processed", "This request has already been "+req.Status+".", false)
+		return
+	}
+
+	// Parse event details from payload
+	eventDetails := extractEventDetails(req.Payload)
+
+	// Calculate expires in
+	expiresIn := formatDuration(time.Until(req.ExpiresAt))
+
+	h.renderApprove(w, "approve-layout", map[string]interface{}{
+		"Title":        "Approve Request",
+		"Token":        token,
+		"Request":      req,
+		"EventDetails": eventDetails,
+		"ExpiresIn":    expiresIn,
+	})
+}
+
+// EventDetails holds extracted event information for display.
+type EventDetails struct {
+	Title       string
+	StartTime   string
+	EndTime     string
+	Location    string
+	Description string
+	Attendees   string
+}
+
+// extractEventDetails parses the request payload to extract event information.
+func extractEventDetails(payload []byte) EventDetails {
+	var details EventDetails
+	var data map[string]interface{}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return details
+	}
+
+	// Try to get summary/title
+	if v, ok := data["summary"].(string); ok {
+		details.Title = v
+	} else if v, ok := data["title"].(string); ok {
+		details.Title = v
+	}
+
+	// Try to get start time
+	if start, ok := data["start"].(map[string]interface{}); ok {
+		if dt, ok := start["dateTime"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, dt); err == nil {
+				formatter := util.GetDefaultFormatter()
+				if formatter != nil {
+					details.StartTime = formatter.FormatDateTime(t)
+				} else {
+					details.StartTime = t.Format("Mon Jan 2, 2006 3:04 PM")
+				}
+			}
+		} else if d, ok := start["date"].(string); ok {
+			details.StartTime = d + " (all day)"
+		}
+	}
+
+	// Location
+	if v, ok := data["location"].(string); ok {
+		details.Location = v
+	}
+
+	// Description (truncate if long)
+	if v, ok := data["description"].(string); ok {
+		if len(v) > 200 {
+			details.Description = v[:200] + "..."
+		} else {
+			details.Description = v
+		}
+	}
+
+	// Attendees
+	if attendees, ok := data["attendees"].([]interface{}); ok {
+		var emails []string
+		for _, a := range attendees {
+			if att, ok := a.(map[string]interface{}); ok {
+				if email, ok := att["email"].(string); ok {
+					emails = append(emails, email)
+				}
+			}
+		}
+		if len(emails) > 0 {
+			if len(emails) > 3 {
+				details.Attendees = strings.Join(emails[:3], ", ") + fmt.Sprintf(" (+%d more)", len(emails)-3)
+			} else {
+				details.Attendees = strings.Join(emails, ", ")
+			}
+		}
+	}
+
+	return details
+}
+
+// formatDuration formats a duration in a human-readable way.
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		return "expired"
+	}
+	if d < time.Minute {
+		return "less than a minute"
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		if mins == 1 {
+			return "in 1 minute"
+		}
+		return fmt.Sprintf("in %d minutes", mins)
+	}
+	hours := int(d.Hours())
+	if hours == 1 {
+		return "in 1 hour"
+	}
+	if hours < 24 {
+		return fmt.Sprintf("in %d hours", hours)
+	}
+	days := hours / 24
+	if days == 1 {
+		return "in 1 day"
+	}
+	return fmt.Sprintf("in %d days", days)
+}
+
+// renderApprove renders the approval template.
+func (h *Handler) renderApprove(w http.ResponseWriter, name string, data map[string]interface{}) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
+		util.Error("Template error", "template", name, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+// renderApproveError renders an error on the approval page.
+func (h *Handler) renderApproveError(w http.ResponseWriter, title, message string, showLogin bool) {
+	h.renderApprove(w, "approve-layout", map[string]interface{}{
+		"Title":         title,
+		"Error":         message,
+		"ErrorTitle":    title,
+		"ShowLoginLink": showLogin,
+	})
 }
