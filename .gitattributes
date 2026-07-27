@@ -1,0 +1,30 @@
+# Normalize line endings in the repository.
+#
+# Go tooling assumes LF: gofmt reports a CRLF file as unformatted, so a
+# repository storing CRLF fails a formatting check on any Linux checkout even
+# though the code is correctly formatted. Text files are therefore stored with
+# LF regardless of the platform they were written on. Windows working copies
+# still get CRLF when core.autocrlf is enabled.
+* text=auto eol=lf
+
+# Sources and configuration.
+*.go      text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.sql     text eol=lf
+*.sum     text eol=lf
+*.mod     text eol=lf
+Dockerfile text eol=lf
+.env.example text eol=lf
+
+# Binary content that must never be line-ending converted.
+*.png     binary
+*.jpg     binary
+*.svg     text eol=lf
+*.exe     binary
+*.db      binary
