@@ -129,9 +129,19 @@ func TestVerifyAPIKey_Invalid(t *testing.T) {
 	key, _ := hasher.GenerateAPIKey("write")
 	hash := hasher.HashAPIKey(key)
 
-	// Modify the key slightly
-	wrongKey := key[:len(key)-1] + "X"
+	// Alter the final character, choosing a replacement that differs from what
+	// is already there. Substituting a fixed character would leave the key
+	// unchanged whenever it happened to end in that character, and the test
+	// would fail roughly one run in sixty-two.
+	replacement := byte('X')
+	if key[len(key)-1] == replacement {
+		replacement = 'Y'
+	}
+	wrongKey := key[:len(key)-1] + string(replacement)
 
+	if wrongKey == key {
+		t.Fatalf("failed to construct a key that differs from %q", key)
+	}
 	if hasher.VerifyAPIKey(wrongKey, hash) {
 		t.Fatal("VerifyAPIKey returned true for invalid key")
 	}
