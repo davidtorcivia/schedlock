@@ -1,179 +1,183 @@
-// Package util provides input validation utilities.
+// Package util provides input validation and normalization.
 package util
 
 import (
+	"errors"
 	"fmt"
 	"net/mail"
-	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-// Validation errors
+// Validation errors.
 var (
-	ErrEmptyField       = fmt.Errorf("field cannot be empty")
-	ErrInvalidEmail     = fmt.Errorf("invalid email address")
-	ErrInvalidTime      = fmt.Errorf("invalid time format (expected RFC3339)")
-	ErrEndBeforeStart   = fmt.Errorf("end time must be after start time")
-	ErrPastTime         = fmt.Errorf("time cannot be in the past")
-	ErrInvalidCalendarID = fmt.Errorf("invalid calendar ID")
-	ErrInvalidColorID   = fmt.Errorf("invalid color ID (must be 1-11)")
-	ErrInvalidVisibility = fmt.Errorf("invalid visibility (must be default, public, or private)")
-	ErrDurationTooLong  = fmt.Errorf("event duration exceeds maximum allowed")
-	ErrTooManyAttendees = fmt.Errorf("too many attendees")
+	ErrEmptyField        = errors.New("field cannot be empty")
+	ErrInvalidEmail      = errors.New("invalid email address")
+	ErrEndBeforeStart    = errors.New("end time must be after start time")
+	ErrPastTime          = errors.New("time cannot be in the past")
+	ErrInvalidCalendarID = errors.New("invalid calendar ID")
+	ErrInvalidColorID    = errors.New("invalid color ID (must be 1-11)")
+	ErrInvalidVisibility = errors.New("invalid visibility (must be default, public, or private)")
+	ErrTooLong           = errors.New("value is too long")
 )
 
-// calendarIDRegex matches valid Google Calendar IDs
-var calendarIDRegex = regexp.MustCompile(`^(primary|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[a-z0-9]+@group\.calendar\.google\.com)$`)
+// Field length caps. Google enforces its own limits; these keep an agent from
+// filling the database with megabyte payloads before approval is ever sought.
+const (
+	MaxSummaryLength     = 1024
+	MaxDescriptionLength = 8192
+	MaxLocationLength    = 1024
+	MaxAttendees         = 250
+)
 
-// ValidateEmail checks if a string is a valid email address.
+// ValidateEmail checks that a string is a usable email address.
 func ValidateEmail(email string) error {
 	if email == "" {
 		return ErrEmptyField
 	}
-
-	_, err := mail.ParseAddress(email)
+	addr, err := mail.ParseAddress(email)
 	if err != nil {
 		return ErrInvalidEmail
 	}
-
-	return nil
-}
-
-// ValidateEmails validates a list of email addresses.
-func ValidateEmails(emails []string) error {
-	for _, email := range emails {
-		if err := ValidateEmail(email); err != nil {
-			return fmt.Errorf("invalid email %q: %w", email, err)
-		}
-	}
-	return nil
-}
-
-// ValidateEmailDomain checks if an email belongs to allowed domains.
-func ValidateEmailDomain(email string, allowedDomains []string) error {
-	if len(allowedDomains) == 0 {
-		return nil // No restrictions
-	}
-
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
+	// mail.ParseAddress accepts display-name forms ("A <a@b.com>"); calendar
+	// attendees must be the bare address.
+	if addr.Address != email {
 		return ErrInvalidEmail
 	}
-
-	domain := strings.ToLower(parts[1])
-	for _, allowed := range allowedDomains {
-		if strings.ToLower(allowed) == domain {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("email domain %q not in allowed list", domain)
+	return nil
 }
 
-// ValidateTimeRange validates start and end times.
+// ValidateEmails validates every address in a list.
+func ValidateEmails(emails []string) error {
+	if len(emails) > MaxAttendees {
+		return fmt.Errorf("%w: at most %d attendees", ErrTooLong, MaxAttendees)
+	}
+	for _, email := range emails {
+		if err := ValidateEmail(email); err != nil {
+			return fmt.Errorf("invalid attendee %q: %w", email, err)
+		}
+	}
+	return nil
+}
+
+// ValidateTimeRange checks ordering and, unless allowPast, rejects start times
+// already in the past.
 func ValidateTimeRange(start, end time.Time, allowPast bool) error {
 	if !allowPast && start.Before(time.Now()) {
 		return ErrPastTime
 	}
-
 	if !end.After(start) {
 		return ErrEndBeforeStart
 	}
-
 	return nil
 }
 
-// ValidateDuration checks if duration is within limits.
-func ValidateDuration(start, end time.Time, maxMinutes int) error {
-	if maxMinutes <= 0 {
-		return nil // No limit
-	}
-
-	duration := end.Sub(start)
-	maxDuration := time.Duration(maxMinutes) * time.Minute
-
-	if duration > maxDuration {
-		return fmt.Errorf("%w: %v exceeds %d minutes", ErrDurationTooLong, duration, maxMinutes)
-	}
-
-	return nil
-}
-
-// ValidateCalendarID checks if a calendar ID is valid.
+// ValidateCalendarID checks that a calendar identifier is plausible.
+//
+// Google calendar IDs are more varied than an email address: alongside
+// "primary" and ordinary addresses there are group calendars
+// ("...@group.calendar.google.com"), imported calendars, and locale holiday
+// calendars such as "en.usa#holiday@group.v.calendar.google.com". The rule is
+// therefore structural rather than an allowlist of shapes.
 func ValidateCalendarID(id string) error {
 	if id == "" {
 		return ErrEmptyField
 	}
-
-	if !calendarIDRegex.MatchString(id) {
+	if id == "primary" {
+		return nil
+	}
+	if len(id) > 254 || !utf8.ValidString(id) {
 		return ErrInvalidCalendarID
 	}
 
+	local, domain, found := strings.Cut(id, "@")
+	if !found || local == "" || domain == "" {
+		return ErrInvalidCalendarID
+	}
+	if !strings.Contains(domain, ".") {
+		return ErrInvalidCalendarID
+	}
+	for _, r := range id {
+		// Control characters and whitespace would let a caller smuggle
+		// separators into the URL path built from this value.
+		if unicode.IsControl(r) || unicode.IsSpace(r) || r == '/' || r == '\\' || r == '?' {
+			return ErrInvalidCalendarID
+		}
+	}
 	return nil
 }
 
-// ValidateColorID checks if a color ID is valid (1-11).
+// ValidateColorID checks a Google Calendar color ID (1-11). Empty is allowed.
 func ValidateColorID(colorID string) error {
 	if colorID == "" {
-		return nil // Optional
+		return nil
 	}
-
-	valid := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}
-	for _, v := range valid {
-		if colorID == v {
-			return nil
-		}
+	switch colorID {
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11":
+		return nil
+	default:
+		return ErrInvalidColorID
 	}
-
-	return ErrInvalidColorID
 }
 
-// ValidateVisibility checks if visibility value is valid.
+// ValidateVisibility checks an event visibility value. Empty is allowed.
 func ValidateVisibility(visibility string) error {
-	if visibility == "" {
-		return nil // Optional, defaults to "default"
+	switch visibility {
+	case "", "default", "public", "private":
+		return nil
+	default:
+		return ErrInvalidVisibility
 	}
-
-	valid := []string{"default", "public", "private"}
-	for _, v := range valid {
-		if visibility == v {
-			return nil
-		}
-	}
-
-	return ErrInvalidVisibility
 }
 
-// ValidateAttendeeCount checks if attendee count is within limits.
-func ValidateAttendeeCount(count, max int) error {
-	if max <= 0 {
-		return nil // No limit
+// ValidateLength rejects oversized free-text fields.
+func ValidateLength(field, value string, max int) error {
+	if utf8.RuneCountInString(value) > max {
+		return fmt.Errorf("%w: %s exceeds %d characters", ErrTooLong, field, max)
 	}
-
-	if count > max {
-		return fmt.Errorf("%w: %d exceeds maximum of %d", ErrTooManyAttendees, count, max)
-	}
-
 	return nil
 }
 
-// SanitizeString removes leading/trailing whitespace and normalizes internal whitespace.
-func SanitizeString(s string) string {
-	// Trim
-	s = strings.TrimSpace(s)
-	// Normalize internal whitespace
-	s = strings.Join(strings.Fields(s), " ")
-	return s
+// SanitizeText normalizes a multi-line free-text field: it trims surrounding
+// whitespace, normalizes line endings, and strips control characters, while
+// preserving the internal line structure an event description depends on.
+func SanitizeText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
 }
 
-// TruncateString truncates a string to max length, adding ellipsis if needed.
+// SanitizeLine normalizes a single-line field, collapsing all internal
+// whitespace (including newlines) into single spaces.
+func SanitizeLine(s string) string {
+	return strings.Join(strings.Fields(SanitizeText(s)), " ")
+}
+
+// TruncateString shortens s to at most maxLen runes, appending an ellipsis when
+// it truncates. It counts runes rather than bytes so multi-byte characters are
+// never cut in half.
 func TruncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= maxLen {
 		return s
 	}
+
+	runes := []rune(s)
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return strings.TrimRight(string(runes[:maxLen-3]), " ") + "..."
 }

@@ -1,23 +1,35 @@
-// Package util provides utility functions for the application.
+// Package util provides timezone-aware formatting and SQLite time helpers.
 package util
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
-	// Embed timezone database for containers without tzdata
+
+	// Embed the timezone database so containers without tzdata can still
+	// resolve display timezones.
 	_ "time/tzdata"
 )
 
-// DisplayFormatter handles timezone-aware display formatting.
+// sqliteLayout matches SQLite's datetime('now'), which is always UTC.
+const sqliteLayout = "2006-01-02 15:04:05"
+
+// DisplayFormatter renders timestamps in the operator's configured timezone.
+// Instances are immutable and safe for concurrent use.
 type DisplayFormatter struct {
-	Location       *time.Location
-	DateFormat     string
-	TimeFormat     string
-	DatetimeFormat string
+	location       *time.Location
+	dateFormat     string
+	timeFormat     string
+	datetimeFormat string
 }
 
-// NewDisplayFormatter creates a formatter for the specified timezone.
-func NewDisplayFormatter(timezone string, dateFormat, timeFormat, datetimeFormat string) (*DisplayFormatter, error) {
+// NewDisplayFormatter creates a formatter for the given IANA timezone.
+// Empty layouts fall back to sensible defaults.
+func NewDisplayFormatter(timezone, dateFormat, timeFormat, datetimeFormat string) (*DisplayFormatter, error) {
+	if timezone == "" {
+		timezone = "UTC"
+	}
+
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		return nil, fmt.Errorf("invalid timezone %q: %w", timezone, err)
@@ -34,130 +46,117 @@ func NewDisplayFormatter(timezone string, dateFormat, timeFormat, datetimeFormat
 	}
 
 	return &DisplayFormatter{
-		Location:       loc,
-		DateFormat:     dateFormat,
-		TimeFormat:     timeFormat,
-		DatetimeFormat: datetimeFormat,
+		location:       loc,
+		dateFormat:     dateFormat,
+		timeFormat:     timeFormat,
+		datetimeFormat: datetimeFormat,
 	}, nil
 }
 
-// FormatDate formats a time as date only in local timezone.
-func (f *DisplayFormatter) FormatDate(t time.Time) string {
-	return t.In(f.Location).Format(f.DateFormat)
-}
-
-// FormatTime formats a time as time only in local timezone.
-func (f *DisplayFormatter) FormatTime(t time.Time) string {
-	return t.In(f.Location).Format(f.TimeFormat)
-}
-
-// FormatDateTime formats a time as full datetime in local timezone.
-func (f *DisplayFormatter) FormatDateTime(t time.Time) string {
-	return t.In(f.Location).Format(f.DatetimeFormat)
-}
-
-// FormatDateTimeWithZone formats with timezone abbreviation.
-func (f *DisplayFormatter) FormatDateTimeWithZone(t time.Time) string {
-	local := t.In(f.Location)
-	zone, _ := local.Zone()
-	return local.Format(f.DatetimeFormat) + " " + zone
-}
-
-// FormatRelative formats a time relative to now (e.g., "in 47 minutes", "2 hours ago").
-func (f *DisplayFormatter) FormatRelative(t time.Time) string {
-	now := time.Now()
-	diff := t.Sub(now)
-
-	if diff < 0 {
-		// Past
-		diff = -diff
-		return formatDuration(diff) + " ago"
+// Location returns the display timezone. Handlers use it to interpret local
+// times submitted by the browser (for example datetime-local form fields).
+func (f *DisplayFormatter) Location() *time.Location {
+	if f == nil || f.location == nil {
+		return time.UTC
 	}
-	// Future
-	return "in " + formatDuration(diff)
+	return f.location
 }
 
-// FormatExpiresIn formats expiry time for notifications.
+// FormatDate renders the date portion in the display timezone.
+func (f *DisplayFormatter) FormatDate(t time.Time) string {
+	return t.In(f.Location()).Format(f.dateFormat)
+}
+
+// FormatDateTime renders a full timestamp in the display timezone.
+func (f *DisplayFormatter) FormatDateTime(t time.Time) string {
+	return t.In(f.Location()).Format(f.datetimeFormat)
+}
+
+// FormatForInput renders a timestamp for an HTML datetime-local field, in the
+// display timezone so the value the operator sees matches the value they edit.
+func (f *DisplayFormatter) FormatForInput(t time.Time) string {
+	return t.In(f.Location()).Format("2006-01-02T15:04")
+}
+
+// ParseFromInput interprets an HTML datetime-local value as wall-clock time in
+// the display timezone. Parsing it as UTC instead silently shifts every edited
+// event by the operator's offset.
+func (f *DisplayFormatter) ParseFromInput(value string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02T15:04", value, f.Location())
+}
+
+// FormatExpiresIn renders the remaining time before expiry, e.g. "47 minutes".
 func (f *DisplayFormatter) FormatExpiresIn(expiresAt time.Time) string {
-	diff := time.Until(expiresAt)
-	if diff <= 0 {
+	remaining := time.Until(expiresAt)
+	if remaining <= 0 {
 		return "expired"
 	}
-	return formatDuration(diff)
+	return FormatDuration(remaining)
 }
 
-// formatDuration converts a duration to human-readable string.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		secs := int(d.Seconds())
-		if secs == 1 {
-			return "1 second"
-		}
-		return fmt.Sprintf("%d seconds", secs)
+// FormatDuration renders a duration in coarse, human units.
+func FormatDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return pluralize(int(d.Seconds()), "second")
+	case d < time.Hour:
+		return pluralize(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return pluralize(int(d.Hours()), "hour")
+	default:
+		return pluralize(int(d.Hours()/24), "day")
 	}
+}
 
-	if d < time.Hour {
-		mins := int(d.Minutes())
-		if mins == 1 {
-			return "1 minute"
-		}
-		return fmt.Sprintf("%d minutes", mins)
+func pluralize(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
 	}
-
-	if d < 24*time.Hour {
-		hours := int(d.Hours())
-		if hours == 1 {
-			return "1 hour"
-		}
-		return fmt.Sprintf("%d hours", hours)
-	}
-
-	days := int(d.Hours() / 24)
-	if days == 1 {
-		return "1 day"
-	}
-	return fmt.Sprintf("%d days", days)
+	return fmt.Sprintf("%d %ss", n, unit)
 }
 
-// ParseRFC3339 parses an RFC3339 timestamp.
-func ParseRFC3339(s string) (time.Time, error) {
-	return time.Parse(time.RFC3339, s)
-}
-
-// FormatRFC3339 formats a time as RFC3339.
-func FormatRFC3339(t time.Time) string {
-	return t.UTC().Format(time.RFC3339)
-}
-
-// NowUTC returns current time in UTC.
-func NowUTC() time.Time {
-	return time.Now().UTC()
-}
-
-// SQLiteTimestamp formats a time for SQLite (ISO8601).
+// SQLiteTimestamp formats a time for storage in a TEXT column, in UTC to match
+// SQLite's own datetime('now').
 func SQLiteTimestamp(t time.Time) string {
-	return t.UTC().Format("2006-01-02 15:04:05")
+	return t.UTC().Format(sqliteLayout)
 }
 
-// ParseSQLiteTimestamp parses a SQLite timestamp.
+// ParseSQLiteTimestamp parses a TEXT timestamp written by SQLite or by
+// SQLiteTimestamp. The result is in UTC.
 func ParseSQLiteTimestamp(s string) (time.Time, error) {
-	return time.Parse("2006-01-02 15:04:05", s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+	// Values written by application code use the canonical layout; values from
+	// older rows or manual edits may carry sub-second precision or a zone.
+	for _, layout := range []string{sqliteLayout, "2006-01-02 15:04:05.999999999-07:00", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognised timestamp %q", s)
 }
 
-// Default formatter instance
-var defaultFormatter *DisplayFormatter
+// defaultFormatter is replaced when display settings change while requests are
+// in flight, so it is stored atomically.
+var defaultFormatter atomic.Pointer[DisplayFormatter]
 
 func init() {
-	// Create a default formatter with UTC timezone
-	defaultFormatter, _ = NewDisplayFormatter("UTC", "", "", "")
+	f, err := NewDisplayFormatter("UTC", "", "", "")
+	if err != nil {
+		panic("util: UTC formatter must be constructible: " + err.Error())
+	}
+	defaultFormatter.Store(f)
 }
 
-// SetDefaultFormatter sets the global default formatter.
+// SetDefaultFormatter replaces the package-level display formatter.
 func SetDefaultFormatter(f *DisplayFormatter) {
-	defaultFormatter = f
+	if f != nil {
+		defaultFormatter.Store(f)
+	}
 }
 
-// GetDefaultFormatter returns the global default formatter.
+// GetDefaultFormatter returns the package-level display formatter.
 func GetDefaultFormatter() *DisplayFormatter {
-	return defaultFormatter
+	return defaultFormatter.Load()
 }

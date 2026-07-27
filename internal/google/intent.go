@@ -1,223 +1,204 @@
-// Package google provides the EventIntent schema for write operations.
+// Package google defines the constrained write schema accepted from API
+// clients.
 package google
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// EventIntent represents the constrained schema for event creation/update.
-// Unknown fields from API requests are silently ignored for security.
+// EventIntent is the schema for event creation.
+//
+// It is deliberately narrower than Google's own event resource: an agent can
+// only express what this struct models, so no unexpected field (guest
+// permissions, conferencing, recurrence) can be smuggled through the proxy and
+// applied without an approver ever seeing it. Unknown JSON fields are ignored.
 type EventIntent struct {
-	CalendarID  string     `json:"calendarId"`            // Required: "primary" or calendar ID
-	Summary     string     `json:"summary"`               // Required: Event title
-	Description string     `json:"description,omitempty"` // Optional: Event description
-	Location    string     `json:"location,omitempty"`    // Optional: Location text
-	Start       time.Time  `json:"start"`                 // Required: RFC3339 with timezone
-	End         time.Time  `json:"end"`                   // Required: RFC3339 with timezone
-	Attendees   []string   `json:"attendees,omitempty"`   // Optional: Email addresses
-	ColorID     string     `json:"colorId,omitempty"`     // Optional: Event color (1-11)
-	Visibility  string     `json:"visibility,omitempty"`  // Optional: "default", "public", "private"
-	Reminders   *Reminders `json:"reminders,omitempty"`   // Optional: Custom reminders
+	CalendarID  string     `json:"calendarId"`            // Required: "primary" or a calendar ID
+	Summary     string     `json:"summary"`               // Required: event title
+	Description string     `json:"description,omitempty"` // Optional
+	Location    string     `json:"location,omitempty"`    // Optional
+	Start       time.Time  `json:"start"`                 // Required: RFC3339 with offset
+	End         time.Time  `json:"end"`                   // Required: RFC3339 with offset
+	Attendees   []string   `json:"attendees,omitempty"`   // Optional: email addresses
+	ColorID     string     `json:"colorId,omitempty"`     // Optional: "1".."11"
+	Visibility  string     `json:"visibility,omitempty"`  // Optional
+	Reminders   *Reminders `json:"reminders,omitempty"`   // Optional
 }
 
-// Validate checks if the EventIntent has all required fields and valid values.
+// Validate reports whether the intent is well-formed and acceptable.
 func (e *EventIntent) Validate() error {
 	if e.CalendarID == "" {
-		return fmt.Errorf("calendarId is required")
+		return errors.New("calendarId is required")
 	}
 	if err := util.ValidateCalendarID(e.CalendarID); err != nil {
 		return err
 	}
-
 	if e.Summary == "" {
-		return fmt.Errorf("summary is required")
+		return errors.New("summary is required")
 	}
-
 	if e.Start.IsZero() {
-		return fmt.Errorf("start time is required")
+		return errors.New("start time is required (RFC3339, e.g. 2024-01-15T10:00:00-05:00)")
 	}
-
 	if e.End.IsZero() {
-		return fmt.Errorf("end time is required")
+		return errors.New("end time is required (RFC3339, e.g. 2024-01-15T11:00:00-05:00)")
 	}
-
 	if err := util.ValidateTimeRange(e.Start, e.End, false); err != nil {
 		return err
 	}
-
-	if e.ColorID != "" {
-		if err := util.ValidateColorID(e.ColorID); err != nil {
-			return err
-		}
+	if err := validateTextFields(e.Summary, e.Description, e.Location); err != nil {
+		return err
 	}
-
-	if e.Visibility != "" {
-		if err := util.ValidateVisibility(e.Visibility); err != nil {
-			return err
-		}
+	if err := util.ValidateColorID(e.ColorID); err != nil {
+		return err
 	}
-
-	if len(e.Attendees) > 0 {
-		if err := util.ValidateEmails(e.Attendees); err != nil {
-			return err
-		}
+	if err := util.ValidateVisibility(e.Visibility); err != nil {
+		return err
 	}
-
-	return nil
+	if err := util.ValidateEmails(e.Attendees); err != nil {
+		return err
+	}
+	return e.Reminders.validate()
 }
 
-// Sanitize cleans and normalizes the EventIntent fields.
+// Sanitize normalizes free-text fields in place.
 func (e *EventIntent) Sanitize() {
-	e.Summary = util.SanitizeString(e.Summary)
-	e.Description = util.SanitizeString(e.Description)
-	e.Location = util.SanitizeString(e.Location)
+	e.Summary = util.SanitizeLine(e.Summary)
+	e.Location = util.SanitizeLine(e.Location)
+	// A description is genuinely multi-line; collapsing it would destroy the
+	// agenda or notes an approver is being asked to review.
+	e.Description = util.SanitizeText(e.Description)
 }
 
-// EventUpdateIntent represents the schema for event updates.
-// Only provided fields will be updated (PATCH semantics).
+// EventUpdateIntent is the schema for event updates. A nil pointer means
+// "leave unchanged", giving the update PATCH semantics.
 type EventUpdateIntent struct {
-	CalendarID  string     `json:"calendarId"`            // Required: "primary" or calendar ID
-	EventID     string     `json:"eventId"`               // Required: Event to update
-	Summary     *string    `json:"summary,omitempty"`     // Optional: New title
-	Description *string    `json:"description,omitempty"` // Optional: New description
-	Location    *string    `json:"location,omitempty"`    // Optional: New location
-	Start       *time.Time `json:"start,omitempty"`       // Optional: New start time
-	End         *time.Time `json:"end,omitempty"`         // Optional: New end time
-	Attendees   []string   `json:"attendees,omitempty"`   // Optional: Replace attendees
-	ColorID     *string    `json:"colorId,omitempty"`     // Optional: New color
-	Visibility  *string    `json:"visibility,omitempty"`  // Optional: New visibility
-	Reminders   *Reminders `json:"reminders,omitempty"`   // Optional: New reminders
+	CalendarID  string     `json:"calendarId"`            // Required
+	EventID     string     `json:"eventId"`               // Required
+	Summary     *string    `json:"summary,omitempty"`     // Optional
+	Description *string    `json:"description,omitempty"` // Optional
+	Location    *string    `json:"location,omitempty"`    // Optional
+	Start       *time.Time `json:"start,omitempty"`       // Optional
+	End         *time.Time `json:"end,omitempty"`         // Optional
+	Attendees   []string   `json:"attendees,omitempty"`   // Optional: replaces the list
+	ColorID     *string    `json:"colorId,omitempty"`     // Optional
+	Visibility  *string    `json:"visibility,omitempty"`  // Optional
+	Reminders   *Reminders `json:"reminders,omitempty"`   // Optional
 }
 
-// Validate checks if the EventUpdateIntent has all required fields and valid values.
+// Validate reports whether the update is well-formed.
 func (e *EventUpdateIntent) Validate() error {
 	if e.CalendarID == "" {
-		return fmt.Errorf("calendarId is required")
+		return errors.New("calendarId is required")
 	}
 	if err := util.ValidateCalendarID(e.CalendarID); err != nil {
 		return err
 	}
-
 	if e.EventID == "" {
-		return fmt.Errorf("eventId is required")
+		return errors.New("eventId is required")
 	}
-
-	// Validate optional fields if provided
 	if e.Start != nil && e.End != nil {
 		if err := util.ValidateTimeRange(*e.Start, *e.End, false); err != nil {
 			return err
 		}
 	}
-
+	if err := validateTextFields(deref(e.Summary), deref(e.Description), deref(e.Location)); err != nil {
+		return err
+	}
 	if e.ColorID != nil {
 		if err := util.ValidateColorID(*e.ColorID); err != nil {
 			return err
 		}
 	}
-
 	if e.Visibility != nil {
 		if err := util.ValidateVisibility(*e.Visibility); err != nil {
 			return err
 		}
 	}
-
-	if len(e.Attendees) > 0 {
-		if err := util.ValidateEmails(e.Attendees); err != nil {
-			return err
-		}
+	if err := util.ValidateEmails(e.Attendees); err != nil {
+		return err
 	}
-
-	return nil
+	return e.Reminders.validate()
 }
 
-// HasChanges checks if any fields are set for update.
+// Sanitize normalizes the free-text fields that are present.
+func (e *EventUpdateIntent) Sanitize() {
+	if e.Summary != nil {
+		v := util.SanitizeLine(*e.Summary)
+		e.Summary = &v
+	}
+	if e.Location != nil {
+		v := util.SanitizeLine(*e.Location)
+		e.Location = &v
+	}
+	if e.Description != nil {
+		v := util.SanitizeText(*e.Description)
+		e.Description = &v
+	}
+}
+
+// HasChanges reports whether the update would modify anything.
 func (e *EventUpdateIntent) HasChanges() bool {
 	return e.Summary != nil || e.Description != nil || e.Location != nil ||
 		e.Start != nil || e.End != nil || len(e.Attendees) > 0 ||
 		e.ColorID != nil || e.Visibility != nil || e.Reminders != nil
 }
 
-// EventDeleteIntent represents the schema for event deletion.
+// EventDeleteIntent is the schema for event deletion.
 type EventDeleteIntent struct {
-	CalendarID string `json:"calendarId"` // Required: "primary" or calendar ID
-	EventID    string `json:"eventId"`    // Required: Event to delete
+	CalendarID string `json:"calendarId"` // Required
+	EventID    string `json:"eventId"`    // Required
 }
 
-// Validate checks if the EventDeleteIntent has all required fields.
+// Validate reports whether the deletion is well-formed.
 func (e *EventDeleteIntent) Validate() error {
 	if e.CalendarID == "" {
-		return fmt.Errorf("calendarId is required")
+		return errors.New("calendarId is required")
 	}
 	if err := util.ValidateCalendarID(e.CalendarID); err != nil {
 		return err
 	}
-
 	if e.EventID == "" {
-		return fmt.Errorf("eventId is required")
+		return errors.New("eventId is required")
 	}
-
 	return nil
 }
 
-// Diff represents the changes between two EventIntents for display.
-type Diff struct {
-	Field    string `json:"field"`
-	OldValue string `json:"oldValue"`
-	NewValue string `json:"newValue"`
+// validate checks reminder overrides against Google's accepted values.
+func (r *Reminders) validate() error {
+	if r == nil {
+		return nil
+	}
+	if len(r.Overrides) > 5 {
+		return errors.New("at most 5 reminder overrides are allowed")
+	}
+	for _, override := range r.Overrides {
+		if override.Method != "email" && override.Method != "popup" {
+			return fmt.Errorf("invalid reminder method %q (must be email or popup)", override.Method)
+		}
+		if override.Minutes < 0 || override.Minutes > 40320 { // 4 weeks
+			return errors.New("reminder minutes must be between 0 and 40320")
+		}
+	}
+	return nil
 }
 
-// GenerateDiff creates a list of changes between an existing event and an update.
-func GenerateDiff(existing *Event, update *EventUpdateIntent) []Diff {
-	var diffs []Diff
-
-	if update.Summary != nil && *update.Summary != existing.Summary {
-		diffs = append(diffs, Diff{
-			Field:    "Summary",
-			OldValue: existing.Summary,
-			NewValue: *update.Summary,
-		})
+func validateTextFields(summary, description, location string) error {
+	if err := util.ValidateLength("summary", summary, util.MaxSummaryLength); err != nil {
+		return err
 	}
-
-	if update.Description != nil && *update.Description != existing.Description {
-		diffs = append(diffs, Diff{
-			Field:    "Description",
-			OldValue: util.TruncateString(existing.Description, 50),
-			NewValue: util.TruncateString(*update.Description, 50),
-		})
+	if err := util.ValidateLength("description", description, util.MaxDescriptionLength); err != nil {
+		return err
 	}
+	return util.ValidateLength("location", location, util.MaxLocationLength)
+}
 
-	if update.Location != nil && *update.Location != existing.Location {
-		diffs = append(diffs, Diff{
-			Field:    "Location",
-			OldValue: existing.Location,
-			NewValue: *update.Location,
-		})
+func deref(s *string) string {
+	if s == nil {
+		return ""
 	}
-
-	if update.Start != nil && existing.Start != nil {
-		if !update.Start.Equal(existing.Start.DateTime) {
-			diffs = append(diffs, Diff{
-				Field:    "Start",
-				OldValue: existing.Start.DateTime.Format(time.RFC3339),
-				NewValue: update.Start.Format(time.RFC3339),
-			})
-		}
-	}
-
-	if update.End != nil && existing.End != nil {
-		if !update.End.Equal(existing.End.DateTime) {
-			diffs = append(diffs, Diff{
-				Field:    "End",
-				OldValue: existing.End.DateTime.Format(time.RFC3339),
-				NewValue: update.End.Format(time.RFC3339),
-			})
-		}
-	}
-
-	// TODO: Attendee diff comparison
-
-	return diffs
+	return *s
 }

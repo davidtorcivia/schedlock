@@ -29,9 +29,12 @@ logging:
 	t.Setenv("SCHEDLOCK_SERVER_PORT", "8081")
 	t.Setenv("SCHEDLOCK_BASE_URL", "http://env.example.com")
 
-	cfg, err := Load()
+	cfg, needsSetup, err := Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
+	}
+	if needsSetup {
+		t.Fatal("expected a configured instance, not setup mode")
 	}
 
 	if cfg.Server.Port != 8081 {

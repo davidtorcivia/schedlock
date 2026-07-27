@@ -26,13 +26,13 @@ curl -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
 #### List Events
 ```bash
 curl -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
-  "$SCHEDLOCK_API_URL/api/calendar/primary/events?timeMin=2024-01-01T00:00:00Z&timeMax=2024-01-31T23:59:59Z"
+  "$SCHEDLOCK_API_URL/api/calendar/primary/events?timeMin=2026-01-01T00:00:00Z&timeMax=2026-01-31T23:59:59Z"
 ```
 
 #### Get Free/Busy
 ```bash
 curl -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
-  "$SCHEDLOCK_API_URL/api/calendar/freebusy?timeMin=2024-01-15T00:00:00Z&timeMax=2024-01-15T23:59:59Z"
+  "$SCHEDLOCK_API_URL/api/calendar/freebusy?timeMin=2026-01-15T00:00:00Z&timeMax=2026-01-15T23:59:59Z"
 ```
 
 ### Write Operations (require human approval)
@@ -48,8 +48,8 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
   -d '{
     "calendarId": "primary",
     "summary": "Meeting Title",
-    "start": "2024-01-15T10:00:00-05:00",
-    "end": "2024-01-15T11:00:00-05:00",
+    "start": "2026-01-15T10:00:00-05:00",
+    "end": "2026-01-15T11:00:00-05:00",
     "location": "Conference Room",
     "description": "Meeting agenda...",
     "attendees": ["person@example.com"]
@@ -65,8 +65,8 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
     "calendarId": "primary",
     "eventId": "existing-event-id",
     "summary": "Updated Title",
-    "start": "2024-01-15T14:00:00-05:00",
-    "end": "2024-01-15T15:00:00-05:00"
+    "start": "2026-01-15T14:00:00-05:00",
+    "end": "2026-01-15T15:00:00-05:00"
   }'
 ```
 
@@ -104,37 +104,65 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
   "$SCHEDLOCK_API_URL/api/requests/$REQUEST_ID/cancel"
 ```
 
-## Important Guidelines
+## Guidelines
 
-1. **Always use Idempotency-Key** for create operations to prevent duplicates
-2. **Poll for status** after submitting write requests:
-   - Initial poll: 5 seconds after submission
-   - Subsequent polls: Every 30 seconds
-   - Timeout: 15 minutes (configurable)
-3. **Handle `change_requested` status** - The human may suggest modifications. Read the `suggestion` field and adjust your request.
-4. **Use ISO 8601 format** for all dates/times with timezone
-5. **Primary calendar** - Use `"primary"` as calendar_id for the user's main calendar
+1. **Send an `Idempotency-Key` header on every write.** A retry then returns the
+   original request instead of queuing a second approval for the same change.
+2. **Expect to wait.** A write returns `202 Accepted` with
+   `status: pending_approval`; the change happens only after a person approves.
+   A `200 OK` means the key's policy allowed it to run immediately.
+3. **Poll for the outcome**, or receive it on the configured status webhook:
+   - First check about 5 seconds after submitting
+   - Then every 30 seconds
+   - Give up after the request's `expires_at`
+4. **Handle `change_requested`.** The reviewer has asked for something different.
+   Read the `suggestion` field, adjust, and submit a new request.
+5. **Use RFC 3339 timestamps with an offset**, for example
+   `2026-01-15T10:00:00-05:00`. A time without an offset is ambiguous.
+6. **Use `"primary"`** for the user's main calendar.
+7. **Send only documented fields.** Unknown fields are rejected, so a typo is
+   reported rather than silently dropped.
+8. **Do not retry a denial.** A denied request means the person said no;
+   resubmitting the same change is not an appropriate response.
+
+## Errors
+
+Errors carry a machine-readable code:
+
+```json
+{"error": {"code": "CONSTRAINT_VIOLATION", "message": "Calendar is not in the allowed list", "details": {"constraint": "calendar_allowlist"}}}
+```
+
+| Code | Meaning |
+|---|---|
+| `INVALID_API_KEY` | The key is missing, unknown, revoked, or expired |
+| `INSUFFICIENT_PERMISSIONS` | The key's tier cannot perform this operation |
+| `CONSTRAINT_VIOLATION` | A policy on this key refused the operation |
+| `VALIDATION_ERROR` | The request body was malformed or out of range |
+| `RATE_LIMITED` | Slow down; honour the `Retry-After` header |
+| `CONFLICT` | The request was already decided or is no longer pending |
+| `GOOGLE_API_ERROR` | Google rejected or could not serve the operation |
 
 ## Response Format
 
 ### Write Operation Response
 ```json
 {
-  "request_id": "req_abc123def456",
+  "request_id": "req_kX9mP4qzA1b2C3d4",
   "status": "pending_approval",
-  "expires_at": "2024-01-14T10:15:00Z",
-  "message": "Event creation request submitted for approval"
+  "expires_at": "2026-01-14T10:15:00Z",
+  "message": "Request submitted for approval"
 }
 ```
 
 ### Completed Request Response
 ```json
 {
-  "id": "req_abc123def456",
+  "id": "req_kX9mP4qzA1b2C3d4",
   "status": "completed",
   "result": {
     "id": "google-event-id",
-    "html_link": "https://calendar.google.com/event?eid=..."
+    "htmlLink": "https://calendar.google.com/event?eid=..."
   }
 }
 ```
@@ -142,12 +170,12 @@ curl -X POST -H "Authorization: Bearer $SCHEDLOCK_API_KEY" \
 ### Change Requested Response
 ```json
 {
-  "id": "req_abc123def456",
+  "id": "req_kX9mP4qzA1b2C3d4",
   "status": "change_requested",
   "suggestion": {
     "text": "Please change the meeting time to 3pm instead",
     "suggested_by": "telegram:@username",
-    "suggested_at": "2024-01-14T10:05:00Z"
+    "suggested_at": "2026-01-14T10:05:00Z"
   }
 }
 ```

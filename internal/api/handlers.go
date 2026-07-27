@@ -1,10 +1,14 @@
-// Package api provides REST API handlers.
+// Package api provides the REST API that agents call.
 package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/dtorcivia/schedlock/internal/apikeys"
 	"github.com/dtorcivia/schedlock/internal/config"
@@ -18,7 +22,19 @@ import (
 	"github.com/dtorcivia/schedlock/internal/tokens"
 )
 
-// Handler provides REST API handlers.
+// maxRequestBytes bounds a JSON request body. Calendar intents are small; an
+// unbounded decode would let one caller exhaust memory.
+const maxRequestBytes = 256 << 10
+
+// CalendarClient is the calendar behaviour the API layer depends on.
+type CalendarClient interface {
+	ListCalendars(ctx context.Context) ([]google.Calendar, error)
+	ListEvents(ctx context.Context, opts google.EventListOptions) (*google.EventListResponse, error)
+	GetEvent(ctx context.Context, calendarID, eventID string) (*google.Event, error)
+	FreeBusy(ctx context.Context, req *google.FreeBusyRequest) (*google.FreeBusyResponse, error)
+}
+
+// Handler serves the REST API.
 type Handler struct {
 	config          *config.Config
 	engine          *engine.Engine
@@ -30,18 +46,7 @@ type Handler struct {
 	auditLogger     *engine.AuditLogger
 }
 
-// CalendarClient defines the subset of Google Calendar client behavior used by the API handler.
-type CalendarClient interface {
-	ListCalendars(ctx context.Context) ([]google.Calendar, error)
-	ListEvents(ctx context.Context, opts google.EventListOptions) (*google.EventListResponse, error)
-	GetEvent(ctx context.Context, calendarID, eventID string) (*google.Event, error)
-	FreeBusy(ctx context.Context, req *google.FreeBusyRequest) (*google.FreeBusyResponse, error)
-	CreateEvent(ctx context.Context, intent *google.EventIntent) (*google.Event, error)
-	UpdateEvent(ctx context.Context, intent *google.EventUpdateIntent) (*google.Event, error)
-	DeleteEvent(ctx context.Context, intent *google.EventDeleteIntent) error
-}
-
-// NewHandler creates a new API handler.
+// NewHandler creates an API handler.
 func NewHandler(
 	cfg *config.Config,
 	eng *engine.Engine,
@@ -64,54 +69,36 @@ func NewHandler(
 	}
 }
 
-// RegisterRoutes registers API routes.
+// RegisterRoutes registers the authenticated API routes.
+//
+// Decision callbacks are deliberately absent: they authenticate with a decision
+// token rather than an API key, and are registered on the public router.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	// Health check (no auth)
-	mux.HandleFunc("GET /api/health", h.Health)
-
-	// Calendar read operations (read tier)
+	// Calendar reads.
 	mux.HandleFunc("GET /api/calendar/list", h.ListCalendars)
 	mux.HandleFunc("GET /api/calendar/{calendarId}/events", h.ListEvents)
 	mux.HandleFunc("GET /api/calendar/{calendarId}/events/{eventId}", h.GetEvent)
 	mux.HandleFunc("GET /api/calendar/freebusy", h.FreeBusy)
 	mux.HandleFunc("POST /api/calendar/freebusy", h.FreeBusy)
 
-	// Calendar write operations (write tier)
+	// Calendar writes, which enter the approval workflow.
 	mux.HandleFunc("POST /api/calendar/events/create", h.CreateEvent)
 	mux.HandleFunc("POST /api/calendar/events/update", h.UpdateEvent)
 	mux.HandleFunc("POST /api/calendar/events/delete", h.DeleteEvent)
 
-	// Request management
+	// Request management.
 	mux.HandleFunc("GET /api/requests", h.ListRequests)
 	mux.HandleFunc("GET /api/requests/{requestId}", h.GetRequest)
 	mux.HandleFunc("POST /api/requests/{requestId}/cancel", h.CancelRequest)
 
-	// Callback endpoints (token-based auth)
-	mux.HandleFunc("POST /api/callback/approve/{token}", h.ApproveCallback)
-	mux.HandleFunc("POST /api/callback/deny/{token}", h.DenyCallback)
-	mux.HandleFunc("POST /api/callback/suggest/{token}", h.SuggestCallback)
-	mux.HandleFunc("GET /api/callback/approve/{token}", h.ApproveCallback)
-	mux.HandleFunc("GET /api/callback/deny/{token}", h.DenyCallback)
-
-	// Admin endpoints (admin tier)
+	// Administration.
 	mux.HandleFunc("GET /api/admin/stats", h.GetStats)
 	mux.HandleFunc("GET /api/admin/audit", h.GetAuditLog)
 }
 
-// Health returns server health status.
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "healthy",
-		"version": "1.0.0",
-	})
-}
-
 // GetStats returns system statistics.
 func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
-	// Require admin tier
-	authKey := middleware.GetAuthenticatedKey(r)
-	if authKey == nil || authKey.Tier != "admin" {
-		response.Error(w, http.StatusForbidden, "admin access required", nil)
+	if requireTier(w, r, database.TierAdmin) == nil {
 		return
 	}
 
@@ -119,24 +106,28 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.requestRepo.GetStats(ctx)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get stats", err)
+		response.WriteInternalError(w, "Failed to read request statistics", err)
 		return
 	}
 
 	apiKeyStats, err := h.apiKeyRepo.Count(ctx)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get API key stats", err)
+		response.WriteInternalError(w, "Failed to read API key statistics", err)
 		return
 	}
 
 	auditCount, err := h.auditLogger.Count(ctx)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get audit count", err)
+		response.WriteInternalError(w, "Failed to read audit statistics", err)
 		return
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"requests":      stats,
+	response.JSON(w, http.StatusOK, map[string]any{
+		"requests": map[string]any{
+			"by_status":     stats.StatusCounts,
+			"pending":       stats.TotalPending,
+			"last_24_hours": stats.TotalLastDay,
+		},
 		"api_keys":      apiKeyStats,
 		"audit_entries": auditCount,
 	})
@@ -144,51 +135,129 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 
 // GetAuditLog returns recent audit entries.
 func (h *Handler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
-	// Require admin tier
-	authKey := middleware.GetAuthenticatedKey(r)
-	if authKey == nil || authKey.Tier != "admin" {
-		response.Error(w, http.StatusForbidden, "admin access required", nil)
+	if requireTier(w, r, database.TierAdmin) == nil {
 		return
 	}
 
-	ctx := r.Context()
-
-	entries, err := h.auditLogger.GetRecent(ctx, 100)
+	entries, err := h.auditLogger.GetRecent(r.Context(), parseLimit(r, 100, 1000))
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get audit log", err)
+		response.WriteInternalError(w, "Failed to read audit log", err)
 		return
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"entries": entries,
-	})
+	items := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		item := map[string]any{
+			"id":         entry.ID,
+			"timestamp":  entry.Timestamp,
+			"event_type": entry.EventType,
+		}
+		addIfValid(item, "request_id", entry.RequestID)
+		addIfValid(item, "api_key_id", entry.APIKeyID)
+		addIfValid(item, "actor", entry.Actor)
+		addIfValid(item, "ip_address", entry.IPAddress)
+		if len(entry.Details) > 0 {
+			item["details"] = entry.Details
+		}
+		items = append(items, item)
+	}
+
+	response.JSON(w, http.StatusOK, map[string]any{"entries": items})
 }
 
-// parseJSON decodes JSON request body.
-func parseJSON(r *http.Request, v interface{}) error {
+// decodeJSON reads a bounded, strict JSON body.
+//
+// Unknown fields are rejected so a caller that misspells "attendees" is told,
+// rather than silently having an approval request created without the guests
+// they meant to invite.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	return nil
 }
 
-// requireTier checks if the authenticated key has at least the required tier.
+// requireTier enforces a minimum tier, writing the error response itself.
 func requireTier(w http.ResponseWriter, r *http.Request, requiredTier string) *apikeys.AuthenticatedKey {
 	authKey := middleware.GetAuthenticatedKey(r)
 	if authKey == nil {
-		response.Error(w, http.StatusUnauthorized, "authentication required", nil)
+		response.WriteInvalidAPIKey(w)
 		return nil
 	}
 
-	tierRank := map[string]int{"read": 1, "write": 2, "admin": 3}
-	if tierRank[authKey.Tier] < tierRank[requiredTier] {
-		response.Error(w, http.StatusForbidden, requiredTier+" tier required", nil)
+	rank := map[string]int{
+		database.TierRead:  1,
+		database.TierWrite: 2,
+		database.TierAdmin: 3,
+	}
+	if rank[authKey.Tier] < rank[requiredTier] {
+		response.WriteInsufficientPermissions(w, authKey.Tier, r.URL.Path)
 		return nil
 	}
 
 	return authKey
 }
 
-// AuditEventTypes are the audit event type constants.
-var (
-	_ = database.AuditRequestCreated
-	_ = database.AuditRequestApproved
-)
+// HandleCallback implements notifications.CallbackHandler, letting a provider
+// deliver a decision made in a chat client.
+func (h *Handler) HandleCallback(ctx context.Context, callback *notifications.Callback) error {
+	if h.notificationMgr != nil {
+		h.notificationMgr.MarkCallback(ctx, callback.Provider, callback.RequestID, callback.MessageID)
+	}
+
+	switch callback.Action {
+	case "approve", "deny":
+		return h.engine.ProcessApproval(ctx, callback.RequestID, callback.Action, callback.RespondedBy)
+	case "suggest":
+		return h.engine.ProcessSuggestion(ctx, callback.RequestID, callback.Suggestion, callback.RespondedBy)
+	default:
+		return fmt.Errorf("%w: %s", engine.ErrInvalidAction, callback.Action)
+	}
+}
+
+// writeDecisionError maps an approval failure onto an HTTP response.
+func writeDecisionError(w http.ResponseWriter, requestID string, err error) {
+	var alreadyDecided *engine.ErrAlreadyDecided
+	switch {
+	case errors.As(err, &alreadyDecided):
+		response.WriteConflict(w, alreadyDecided.Error(), requestID,
+			map[string]any{"status": alreadyDecided.Status})
+	case errors.Is(err, engine.ErrRequestNotFound):
+		response.WriteRequestNotFound(w, requestID)
+	case errors.Is(err, engine.ErrInvalidAction):
+		response.WriteValidationError(w, err.Error())
+	case errors.Is(err, requests.ErrNotPending):
+		response.WriteConflict(w, "Request is no longer pending", requestID, nil)
+	default:
+		response.WriteInternalError(w, "Failed to process the decision", err, "request_id", requestID)
+	}
+}
+
+// addIfValid copies a nullable column into a response map only when set, so
+// absent values are omitted rather than rendered as empty strings.
+func addIfValid(m map[string]any, key string, value sql.NullString) {
+	if value.Valid && value.String != "" {
+		m[key] = value.String
+	}
+}
+
+// parseLimit reads a bounded "limit" query parameter.
+func parseLimit(r *http.Request, fallback, maximum int) int {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return fallback
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 {
+		return fallback
+	}
+	if limit > maximum {
+		return maximum
+	}
+	return limit
+}

@@ -1,31 +1,41 @@
+// Package settings stores the configuration an operator can change at runtime.
 package settings
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/util"
-	"golang.org/x/crypto/bcrypt"
 )
 
+// settingsKey is the row holding the serialized runtime settings.
 const settingsKey = "runtime_settings"
 
-// Store manages runtime settings stored in the database.
+// PIN length bounds. A PIN is a speed bump on a link that is already secret,
+// not a password, so it is kept short but throttled at the point of use.
+const (
+	MinPINLength = 4
+	MaxPINLength = 8
+)
+
+// Store persists runtime settings.
 type Store struct {
 	db *database.DB
 }
 
-// NewStore creates a new runtime settings store.
+// NewStore creates a settings store.
 func NewStore(db *database.DB) *Store {
 	return &Store{db: db}
 }
 
-// RuntimeSettings represents settings that can be changed at runtime.
+// RuntimeSettings is the set of settings changeable without a restart.
 type RuntimeSettings struct {
 	Approval  *ApprovalSettings  `json:"approval,omitempty"`
 	Retention *RetentionSettings `json:"retention,omitempty"`
@@ -35,11 +45,13 @@ type RuntimeSettings struct {
 	Security  *SecuritySettings  `json:"security,omitempty"`
 }
 
+// ApprovalSettings controls the approval workflow.
 type ApprovalSettings struct {
 	TimeoutMinutes int    `json:"timeout_minutes"`
 	DefaultAction  string `json:"default_action"`
 }
 
+// RetentionSettings controls how long history is kept.
 type RetentionSettings struct {
 	Enabled               *bool `json:"enabled,omitempty"`
 	CompletedRequestsDays int   `json:"completed_requests_days"`
@@ -47,11 +59,13 @@ type RetentionSettings struct {
 	WebhookFailuresDays   int   `json:"webhook_failures_days"`
 }
 
+// LoggingSettings controls log output.
 type LoggingSettings struct {
 	Level  string `json:"level"`
 	Format string `json:"format"`
 }
 
+// DisplaySettings controls how times are rendered.
 type DisplaySettings struct {
 	Timezone       string `json:"timezone"`
 	DateFormat     string `json:"date_format"`
@@ -59,46 +73,46 @@ type DisplaySettings struct {
 	DatetimeFormat string `json:"datetime_format"`
 }
 
-// ServerSettings holds server configuration.
+// ServerSettings holds the public address of this server.
 type ServerSettings struct {
 	BaseURL string `json:"base_url,omitempty"`
 }
 
-// SecuritySettings holds security configuration.
+// SecuritySettings holds security options.
 type SecuritySettings struct {
-	ApprovalPINHash string `json:"approval_pin_hash,omitempty"` // bcrypt hash of the approval PIN
+	// ApprovalPINHash is a bcrypt hash; the PIN itself is never stored.
+	ApprovalPINHash string `json:"approval_pin_hash,omitempty"`
 }
 
-// Load retrieves runtime settings from the database.
+// Load reads the stored settings, returning an empty set when none exist.
 func (s *Store) Load(ctx context.Context) (*RuntimeSettings, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, settingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) || raw == "" {
+		return &RuntimeSettings{}, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return &RuntimeSettings{}, nil
-		}
 		return nil, err
 	}
 
-	if raw == "" {
-		return &RuntimeSettings{}, nil
+	var stored RuntimeSettings
+	if err := jsonUnmarshal(raw, &stored); err != nil {
+		return nil, fmt.Errorf("stored settings are unreadable: %w", err)
 	}
-
-	var settings RuntimeSettings
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-		return nil, fmt.Errorf("invalid runtime settings: %w", err)
-	}
-
-	return &settings, nil
+	return &stored, nil
 }
 
-// Save stores runtime settings in the database.
+// Save writes the settings document.
+//
+// The whole document is replaced, so callers must load, modify, and save rather
+// than constructing a fresh document: building one from a single form silently
+// drops every field that form does not own.
 func (s *Store) Save(ctx context.Context, settings *RuntimeSettings) error {
 	if settings == nil {
 		return nil
 	}
 
-	data, err := json.Marshal(settings)
+	data, err := jsonMarshal(settings)
 	if err != nil {
 		return fmt.Errorf("failed to serialize settings: %w", err)
 	}
@@ -107,119 +121,138 @@ func (s *Store) Save(ctx context.Context, settings *RuntimeSettings) error {
 		INSERT INTO settings (key, value, updated_at)
 		VALUES (?, ?, datetime('now'))
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-	`, settingsKey, string(data))
+	`, settingsKey, data)
 	return err
 }
 
-// SetApprovalPIN sets the approval PIN (hashes and stores it).
-// Pass empty string to disable PIN requirement.
-func (s *Store) SetApprovalPIN(ctx context.Context, pin string) error {
-	settings, err := s.Load(ctx)
-	if err != nil {
+// SetApprovalPIN hashes and records a new approval PIN.
+func (s *RuntimeSettings) SetApprovalPIN(pin string) error {
+	if err := ValidatePIN(pin); err != nil {
 		return err
 	}
 
-	if settings.Security == nil {
-		settings.Security = &SecuritySettings{}
-	}
-
-	if pin == "" {
-		settings.Security.ApprovalPINHash = ""
-	} else {
-		hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
-		if err != nil {
-			return fmt.Errorf("failed to hash PIN: %w", err)
-		}
-		settings.Security.ApprovalPINHash = string(hash)
-	}
-
-	return s.Save(ctx, settings)
-}
-
-// VerifyApprovalPIN checks if the provided PIN matches the stored hash.
-// Returns true if PIN is correct, or if no PIN is configured.
-func (s *Store) VerifyApprovalPIN(ctx context.Context, pin string) (bool, error) {
-	settings, err := s.Load(ctx)
+	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("failed to hash PIN: %w", err)
 	}
 
-	// No PIN configured - always valid
-	if settings.Security == nil || settings.Security.ApprovalPINHash == "" {
-		return true, nil
+	if s.Security == nil {
+		s.Security = &SecuritySettings{}
 	}
-
-	// PIN required but not provided
-	if pin == "" {
-		return false, nil
-	}
-
-	// Verify PIN
-	err = bcrypt.CompareHashAndPassword([]byte(settings.Security.ApprovalPINHash), []byte(pin))
-	return err == nil, nil
+	s.Security.ApprovalPINHash = string(hash)
+	return nil
 }
 
-// HasApprovalPIN returns true if an approval PIN is configured.
-func (s *Store) HasApprovalPIN(ctx context.Context) (bool, error) {
-	settings, err := s.Load(ctx)
-	if err != nil {
-		return false, err
+// ClearApprovalPIN removes the approval PIN requirement.
+func (s *RuntimeSettings) ClearApprovalPIN() {
+	if s.Security != nil {
+		s.Security.ApprovalPINHash = ""
 	}
-	return settings.Security != nil && settings.Security.ApprovalPINHash != "", nil
 }
 
-// Validate ensures runtime settings are valid.
-func (s *RuntimeSettings) Validate() error {
-	if s == nil {
-		return nil
+// ValidatePIN checks a PIN's shape.
+func ValidatePIN(pin string) error {
+	if len(pin) < MinPINLength || len(pin) > MaxPINLength {
+		return fmt.Errorf("the PIN must be between %d and %d digits", MinPINLength, MaxPINLength)
 	}
-	if s.Approval != nil {
-		if s.Approval.TimeoutMinutes < 1 || s.Approval.TimeoutMinutes > 1440 {
-			return fmt.Errorf("approval timeout must be between 1 and 1440 minutes")
+	for _, c := range pin {
+		if c < '0' || c > '9' {
+			return errors.New("the PIN must contain digits only")
 		}
-		if s.Approval.DefaultAction != "" && s.Approval.DefaultAction != "approve" && s.Approval.DefaultAction != "deny" {
-			return fmt.Errorf("approval default action must be approve or deny")
-		}
-	}
-	if s.Retention != nil {
-		if s.Retention.CompletedRequestsDays < 1 || s.Retention.CompletedRequestsDays > 3650 {
-			return fmt.Errorf("completed request retention must be between 1 and 3650 days")
-		}
-		if s.Retention.AuditLogDays < 1 || s.Retention.AuditLogDays > 3650 {
-			return fmt.Errorf("audit log retention must be between 1 and 3650 days")
-		}
-		if s.Retention.WebhookFailuresDays < 1 || s.Retention.WebhookFailuresDays > 3650 {
-			return fmt.Errorf("webhook failures retention must be between 1 and 3650 days")
-		}
-	}
-	if s.Logging != nil {
-		if s.Logging.Level != "" {
-			if s.Logging.Level != "debug" && s.Logging.Level != "info" && s.Logging.Level != "warn" && s.Logging.Level != "error" {
-				return fmt.Errorf("invalid log level")
-			}
-		}
-		if s.Logging.Format != "" {
-			if s.Logging.Format != "json" && s.Logging.Format != "text" {
-				return fmt.Errorf("invalid log format")
-			}
-		}
-	}
-	if s.Display != nil && s.Display.Timezone != "" {
-		if _, err := util.NewDisplayFormatter(s.Display.Timezone, "", "", ""); err != nil {
-			return fmt.Errorf("invalid display timezone: %w", err)
-		}
-	}
-	if s.Server != nil && s.Server.BaseURL != "" {
-		if !strings.HasPrefix(s.Server.BaseURL, "http://") && !strings.HasPrefix(s.Server.BaseURL, "https://") {
-			return fmt.Errorf("base_url must start with http:// or https://")
-		}
-		// Remove trailing slash for consistency
-		s.Server.BaseURL = strings.TrimSuffix(s.Server.BaseURL, "/")
 	}
 	return nil
 }
 
-// ApplyTo applies runtime settings to the provided config.
+// VerifyApprovalPIN reports whether a submitted PIN matches.
+// It returns true when no PIN is configured.
+func (s *Store) VerifyApprovalPIN(ctx context.Context, pin string) (bool, error) {
+	stored, err := s.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	if stored.Security == nil || stored.Security.ApprovalPINHash == "" {
+		return true, nil
+	}
+	if pin == "" {
+		return false, nil
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(stored.Security.ApprovalPINHash), []byte(pin))
+	if err != nil && !errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+		return false, fmt.Errorf("stored PIN is unusable: %w", err)
+	}
+	return err == nil, nil
+}
+
+// HasApprovalPIN reports whether an approval PIN is configured.
+func (s *Store) HasApprovalPIN(ctx context.Context) (bool, error) {
+	stored, err := s.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+	return stored.Security != nil && stored.Security.ApprovalPINHash != "", nil
+}
+
+// Validate checks the settings and normalizes the base URL.
+func (s *RuntimeSettings) Validate() error {
+	if s == nil {
+		return nil
+	}
+
+	if s.Approval != nil {
+		if s.Approval.TimeoutMinutes < 1 || s.Approval.TimeoutMinutes > 1440 {
+			return errors.New("the approval timeout must be between 1 and 1440 minutes")
+		}
+		switch s.Approval.DefaultAction {
+		case "", "approve", "deny":
+		default:
+			return errors.New("the default action on timeout must be approve or deny")
+		}
+	}
+
+	if s.Retention != nil {
+		for label, days := range map[string]int{
+			"completed request retention": s.Retention.CompletedRequestsDays,
+			"audit log retention":         s.Retention.AuditLogDays,
+			"webhook failure retention":   s.Retention.WebhookFailuresDays,
+		} {
+			if days < 1 || days > 3650 {
+				return fmt.Errorf("%s must be between 1 and 3650 days", label)
+			}
+		}
+	}
+
+	if s.Logging != nil {
+		switch s.Logging.Level {
+		case "", "debug", "info", "warn", "error":
+		default:
+			return errors.New("the log level must be debug, info, warn, or error")
+		}
+		switch s.Logging.Format {
+		case "", "json", "text":
+		default:
+			return errors.New("the log format must be json or text")
+		}
+	}
+
+	if s.Display != nil && s.Display.Timezone != "" {
+		if _, err := util.NewDisplayFormatter(s.Display.Timezone, "", "", ""); err != nil {
+			return fmt.Errorf("unknown timezone %q", s.Display.Timezone)
+		}
+	}
+
+	if s.Server != nil && s.Server.BaseURL != "" {
+		if !strings.HasPrefix(s.Server.BaseURL, "http://") && !strings.HasPrefix(s.Server.BaseURL, "https://") {
+			return errors.New("the base URL must start with http:// or https://")
+		}
+		s.Server.BaseURL = strings.TrimRight(s.Server.BaseURL, "/")
+	}
+
+	return nil
+}
+
+// ApplyTo overlays the settings onto a configuration.
 func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 	if cfg == nil || s == nil {
 		return nil
@@ -236,6 +269,7 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 			cfg.Approval.DefaultAction = s.Approval.DefaultAction
 		}
 	}
+
 	if s.Retention != nil {
 		if s.Retention.Enabled != nil {
 			cfg.Retention.Enabled = *s.Retention.Enabled
@@ -250,6 +284,7 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 			cfg.Retention.WebhookFailuresDays = s.Retention.WebhookFailuresDays
 		}
 	}
+
 	if s.Logging != nil {
 		if s.Logging.Level != "" {
 			cfg.Logging.Level = s.Logging.Level
@@ -258,10 +293,11 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 			cfg.Logging.Format = s.Logging.Format
 		}
 	}
-	if s.Display != nil && s.Display.Timezone != "" {
-		cfg.Display.Timezone = s.Display.Timezone
-	}
+
 	if s.Display != nil {
+		if s.Display.Timezone != "" {
+			cfg.Display.Timezone = s.Display.Timezone
+		}
 		if s.Display.DateFormat != "" {
 			cfg.Display.DateFormat = s.Display.DateFormat
 		}
@@ -272,9 +308,9 @@ func (s *RuntimeSettings) ApplyTo(cfg *config.Config) error {
 			cfg.Display.DatetimeFormat = s.Display.DatetimeFormat
 		}
 	}
+
 	if s.Server != nil && s.Server.BaseURL != "" {
 		cfg.Server.BaseURL = s.Server.BaseURL
-		// Update OAuth redirect URI to match
 		cfg.Google.RedirectURI = s.Server.BaseURL + "/oauth/callback"
 	}
 

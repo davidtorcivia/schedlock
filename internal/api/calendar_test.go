@@ -63,7 +63,7 @@ func TestListEventsQueryParamsAndPagination(t *testing.T) {
 		nil,
 	)
 	req.SetPathValue("calendarId", "primary")
-	req = req.WithContext(context.WithValue(req.Context(), middleware.ContextKeyAPIKey, &apikeys.AuthenticatedKey{
+	req = req.WithContext(middleware.WithAPIKey(req.Context(), &apikeys.AuthenticatedKey{
 		ID:   "key1",
 		Tier: "read",
 	}))
@@ -125,7 +125,7 @@ func TestListEventsInvalidSingleEvents(t *testing.T) {
 		nil,
 	)
 	req.SetPathValue("calendarId", "primary")
-	req = req.WithContext(context.WithValue(req.Context(), middleware.ContextKeyAPIKey, &apikeys.AuthenticatedKey{
+	req = req.WithContext(middleware.WithAPIKey(req.Context(), &apikeys.AuthenticatedKey{
 		ID:   "key1",
 		Tier: "read",
 	}))

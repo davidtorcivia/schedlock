@@ -72,11 +72,19 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {
 		return false, fmt.Errorf("invalid version: %w", err)
 	}
+	if version != argon2.Version {
+		return false, fmt.Errorf("unsupported argon2 version: %d", version)
+	}
 
 	var memory, time uint32
 	var threads uint8
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil {
 		return false, fmt.Errorf("invalid parameters: %w", err)
+	}
+	// The encoded parameters drive an allocation, so refuse absurd values
+	// rather than letting a corrupt hash exhaust memory.
+	if memory > 1<<20 || time == 0 || time > 32 || threads == 0 {
+		return false, fmt.Errorf("argon2 parameters out of range")
 	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])

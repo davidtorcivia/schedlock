@@ -5,64 +5,99 @@ import (
 	"time"
 )
 
-type loginBucket struct {
+// maxTrackedKeys bounds the limiter's memory.
+//
+// Attempts are keyed by client address, which an attacker behind a trusted
+// proxy can vary freely through a forwarded header. Without a ceiling, that
+// turns the limiter itself into a memory-exhaustion vector.
+const maxTrackedKeys = 8192
+
+// AttemptLimiter is a fixed-window limiter for authentication attempts.
+type AttemptLimiter struct {
+	mu          sync.Mutex
+	attempts    map[string]*attemptWindow
+	maxAttempts int
+	window      time.Duration
+	now         func() time.Time // injectable for tests
+}
+
+type attemptWindow struct {
 	count int
 	reset time.Time
 }
 
-// LoginLimiter provides a simple per-key fixed-window limiter.
-type LoginLimiter struct {
-	mu          sync.Mutex
-	attempts    map[string]*loginBucket
-	maxAttempts int
-	window      time.Duration
-}
-
-// NewLoginLimiter creates a new limiter with the given limits.
-func NewLoginLimiter(maxAttempts int, window time.Duration) *LoginLimiter {
+// NewAttemptLimiter creates a limiter allowing maxAttempts per window.
+func NewAttemptLimiter(maxAttempts int, window time.Duration) *AttemptLimiter {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
 	if window <= 0 {
 		window = 10 * time.Minute
 	}
-	return &LoginLimiter{
-		attempts:    make(map[string]*loginBucket),
+	return &AttemptLimiter{
+		attempts:    make(map[string]*attemptWindow),
 		maxAttempts: maxAttempts,
 		window:      window,
+		now:         time.Now,
 	}
 }
 
-// Allow records an attempt for the key and returns whether it is permitted.
-func (l *LoginLimiter) Allow(key string) bool {
+// Allow records an attempt and reports whether it is permitted.
+//
+// An empty key means the caller could not be identified, in which case attempts
+// are counted against a shared bucket rather than waved through.
+func (l *AttemptLimiter) Allow(key string) bool {
 	if key == "" {
-		return true
+		key = "unknown"
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := time.Now()
-	bucket, ok := l.attempts[key]
-	if !ok || now.After(bucket.reset) {
-		bucket = &loginBucket{count: 0, reset: now.Add(l.window)}
-		l.attempts[key] = bucket
+	now := l.now()
+
+	window, ok := l.attempts[key]
+	if !ok || now.After(window.reset) {
+		l.evictExpiredLocked(now)
+		window = &attemptWindow{reset: now.Add(l.window)}
+		l.attempts[key] = window
 	}
 
-	if bucket.count >= l.maxAttempts {
+	if window.count >= l.maxAttempts {
 		return false
 	}
 
-	bucket.count++
+	window.count++
 	return true
 }
 
-// Reset clears attempts for a key (on successful login).
-func (l *LoginLimiter) Reset(key string) {
+// Reset clears the attempts recorded for a key, called after a success.
+func (l *AttemptLimiter) Reset(key string) {
 	if key == "" {
 		return
 	}
 	l.mu.Lock()
 	delete(l.attempts, key)
 	l.mu.Unlock()
+}
+
+// evictExpiredLocked drops finished windows, and if the map is still at its
+// ceiling, clears it outright rather than growing without bound.
+func (l *AttemptLimiter) evictExpiredLocked(now time.Time) {
+	if len(l.attempts) < maxTrackedKeys {
+		return
+	}
+
+	for key, window := range l.attempts {
+		if now.After(window.reset) {
+			delete(l.attempts, key)
+		}
+	}
+
+	if len(l.attempts) >= maxTrackedKeys {
+		// Every tracked window is still live: the limiter is under attack from
+		// many sources. Starting over is safer than unbounded growth, and the
+		// windows are short.
+		l.attempts = make(map[string]*attemptWindow)
+	}
 }

@@ -1,21 +1,25 @@
-// Package middleware provides rate limiting using the token bucket algorithm.
+// Package middleware provides per-key rate limiting using token buckets.
 package middleware
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/config"
 )
 
-// RateLimiter implements per-tier rate limiting using token buckets.
+// bucketIdleTTL is how long an unused bucket is kept before eviction.
+const bucketIdleTTL = time.Hour
+
+// RateLimiter applies a per-API-key token bucket sized by the key's tier.
 type RateLimiter struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	buckets map[string]*tokenBucket
 	limits  config.RateLimitsConfig
+	now     func() time.Time // injectable for tests
 }
 
-// tokenBucket implements the token bucket algorithm.
 type tokenBucket struct {
 	tokens     float64
 	maxTokens  float64
@@ -23,107 +27,97 @@ type tokenBucket struct {
 	lastRefill time.Time
 }
 
-// NewRateLimiter creates a new rate limiter with the given configuration.
+// NewRateLimiter creates a rate limiter with the given per-tier limits.
 func NewRateLimiter(limits config.RateLimitsConfig) *RateLimiter {
 	return &RateLimiter{
 		buckets: make(map[string]*tokenBucket),
 		limits:  limits,
+		now:     time.Now,
 	}
 }
 
-// Allow checks if a request should be allowed based on the rate limit.
-// Returns true if allowed, false if rate limited.
+// Allow consumes a token for keyID, reporting whether the request may proceed.
 func (rl *RateLimiter) Allow(keyID, tier string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// Get or create bucket for this key
 	bucket, exists := rl.buckets[keyID]
 	if !exists {
-		bucket = rl.createBucket(tier)
+		bucket = rl.newBucket(tier)
 		rl.buckets[keyID] = bucket
 	}
 
-	// Refill tokens based on elapsed time
-	bucket.refill()
+	now := rl.now()
+	elapsed := now.Sub(bucket.lastRefill).Seconds()
+	bucket.lastRefill = now
+	bucket.tokens = min(bucket.maxTokens, bucket.tokens+elapsed*bucket.refillRate)
 
-	// Check if we have tokens available
-	if bucket.tokens >= 1.0 {
-		bucket.tokens -= 1.0
+	if bucket.tokens >= 1 {
+		bucket.tokens--
 		return true
 	}
-
 	return false
 }
 
-// createBucket creates a new token bucket for the given tier.
-func (rl *RateLimiter) createBucket(tier string) *tokenBucket {
+func (rl *RateLimiter) newBucket(tier string) *tokenBucket {
 	var limit config.TierLimit
-
 	switch tier {
 	case "read":
 		limit = rl.limits.Read
-	case "write":
-		limit = rl.limits.Write
 	case "admin":
 		limit = rl.limits.Admin
 	default:
-		// Default to most restrictive
+		// Unknown tiers get the most restrictive configured limit.
 		limit = rl.limits.Write
 	}
 
+	burst := float64(limit.Burst)
+	if burst < 1 {
+		burst = 1
+	}
+
 	return &tokenBucket{
-		tokens:     float64(limit.Burst), // Start with full burst capacity
-		maxTokens:  float64(limit.Burst),
-		refillRate: float64(limit.RequestsPerMinute) / 60.0, // Convert to per-second
-		lastRefill: time.Now(),
+		tokens:     burst,
+		maxTokens:  burst,
+		refillRate: float64(limit.RequestsPerMinute) / 60,
+		lastRefill: rl.now(),
 	}
 }
 
-// refill adds tokens based on elapsed time.
-func (tb *tokenBucket) refill() {
-	now := time.Now()
-	elapsed := now.Sub(tb.lastRefill).Seconds()
-	tb.lastRefill = now
+// StartCleanup evicts buckets for keys that have gone quiet, so the map cannot
+// grow without bound over the life of the process.
+func (rl *RateLimiter) StartCleanup(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	// Add tokens based on time elapsed
-	tb.tokens += elapsed * tb.refillRate
-
-	// Cap at max tokens
-	if tb.tokens > tb.maxTokens {
-		tb.tokens = tb.maxTokens
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rl.evictIdle(bucketIdleTTL)
+		}
 	}
 }
 
-// GetRemainingTokens returns the number of remaining tokens for a key.
-func (rl *RateLimiter) GetRemainingTokens(keyID string) int {
-	rl.mu.RLock()
-	defer rl.mu.RUnlock()
-
-	bucket, exists := rl.buckets[keyID]
-	if !exists {
-		return 0
-	}
-
-	return int(bucket.tokens)
-}
-
-// Reset removes all rate limit state (useful for testing).
-func (rl *RateLimiter) Reset() {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	rl.buckets = make(map[string]*tokenBucket)
-}
-
-// Cleanup removes stale buckets that haven't been used recently.
-func (rl *RateLimiter) Cleanup(maxAge time.Duration) {
+func (rl *RateLimiter) evictIdle(maxAge time.Duration) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	cutoff := time.Now().Add(-maxAge)
+	cutoff := rl.now().Add(-maxAge)
 	for keyID, bucket := range rl.buckets {
 		if bucket.lastRefill.Before(cutoff) {
 			delete(rl.buckets, keyID)
 		}
 	}
+}
+
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }

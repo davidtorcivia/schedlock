@@ -2,13 +2,21 @@
 package database
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 )
 
-// migrate runs all database migrations.
-func (db *DB) migrate() error {
-	// Create migrations table if not exists
-	if _, err := db.Exec(`
+// migration is a single ordered, transactional schema change.
+type migration struct {
+	version int
+	name    string
+	sql     string
+}
+
+// migrate applies every migration newer than the recorded schema version.
+func (db *DB) migrate(ctx context.Context) error {
+	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS migrations (
 			version INTEGER PRIMARY KEY,
 			applied_at TEXT DEFAULT (datetime('now'))
@@ -17,73 +25,76 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
-	// Get current version
 	var currentVersion int
-	row := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM migrations")
+	row := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM migrations")
 	if err := row.Scan(&currentVersion); err != nil {
-		return fmt.Errorf("failed to get current migration version: %w", err)
+		return fmt.Errorf("failed to read current migration version: %w", err)
 	}
 
-	// Run migrations
-	migrations := getAllMigrations()
-	for _, m := range migrations {
-		if m.version > currentVersion {
-			if err := db.runMigration(m); err != nil {
-				return fmt.Errorf("migration %d failed: %w", m.version, err)
-			}
+	for _, m := range allMigrations() {
+		if m.version <= currentVersion {
+			continue
+		}
+		if err := db.runMigration(ctx, m); err != nil {
+			return fmt.Errorf("migration %d (%s) failed: %w", m.version, m.name, err)
 		}
 	}
 
 	return nil
 }
 
-type migration struct {
-	version int
-	sql     string
-}
+func (db *DB) runMigration(ctx context.Context, m migration) error {
+	// Foreign key enforcement cannot be toggled inside a transaction, and the
+	// table-rebuild migrations need it off while rows are copied.
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %w", err)
+	}
+	defer func() {
+		if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+			logf("warning: failed to re-enable foreign keys after migration %d: %v", m.version, err)
+		}
+	}()
 
-func (db *DB) runMigration(m migration) error {
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck // no-op once the tx commits
 
-	if _, err := tx.Exec(m.sql); err != nil {
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 		return fmt.Errorf("failed to execute migration SQL: %w", err)
 	}
 
-	if _, err := tx.Exec("INSERT INTO migrations (version) VALUES (?)", m.version); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO migrations (version) VALUES (?)", m.version); err != nil {
 		return fmt.Errorf("failed to record migration: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// A rebuild migration leaves dangling references behind if the old data
+	// violated the new constraints; surface that immediately rather than at
+	// some later write.
+	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("failed to verify foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return fmt.Errorf("migration left foreign key violations behind")
+	}
+
+	return rows.Err()
 }
 
-func getAllMigrations() []migration {
+func allMigrations() []migration {
 	return []migration{
-		{
-			version: 1,
-			sql:     migration001InitialSchema,
-		},
-		{
-			version: 2,
-			sql:     migration002NotificationCredentials,
-		},
+		{version: 1, name: "initial_schema", sql: migration001InitialSchema},
+		{version: 2, name: "notification_credentials", sql: migration002NotificationCredentials},
+		{version: 3, name: "referential_cleanup", sql: migration003ReferentialCleanup},
 	}
 }
-
-const migration002NotificationCredentials = `
--- Notification credentials table
--- Stores encrypted credentials for notification providers
-CREATE TABLE IF NOT EXISTS notification_credentials (
-    provider TEXT PRIMARY KEY,              -- 'ntfy', 'pushover', 'telegram'
-    enabled INTEGER NOT NULL DEFAULT 0,     -- 1 = enabled, 0 = disabled
-    credentials_enc BLOB,                   -- AES-256-GCM encrypted JSON
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-);
-`
 
 const migration001InitialSchema = `
 -- API Keys table
@@ -131,7 +142,7 @@ CREATE TABLE IF NOT EXISTS requests (
     decided_by TEXT,                        -- 'ntfy', 'pushover', 'telegram', 'web_ui', 'timeout'
     executed_at TEXT,
     retry_count INTEGER DEFAULT 0,
-    webhook_notified_at TEXT               -- When Moltbot webhook was sent
+    webhook_notified_at TEXT               -- When the client webhook was sent
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
@@ -210,7 +221,7 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Sessions table
 -- Web UI session management
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,                    -- Secure random 32 bytes, base64
+    id TEXT PRIMARY KEY,                    -- Secure random 32 bytes, hex
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL,
     last_activity TEXT,
@@ -253,7 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys(created_a
 
 
 -- Webhook Failures table
--- Tracks failed Moltbot webhook deliveries for retry/observability
+-- Tracks failed client webhook deliveries for retry/observability
 CREATE TABLE IF NOT EXISTS webhook_failures (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     webhook_id TEXT NOT NULL,               -- Unique ID for this delivery attempt
@@ -278,4 +289,97 @@ CREATE TABLE IF NOT EXISTS admin_auth (
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
+`
+
+const migration002NotificationCredentials = `
+-- Notification credentials table
+-- Stores encrypted credentials for notification providers
+CREATE TABLE IF NOT EXISTS notification_credentials (
+    provider TEXT PRIMARY KEY,              -- 'ntfy', 'pushover', 'telegram', 'webhook', 'google_oauth'
+    enabled INTEGER NOT NULL DEFAULT 0,     -- 1 = enabled, 0 = disabled
+    credentials_enc BLOB,                   -- AES-256-GCM encrypted JSON
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+`
+
+// migration003ReferentialCleanup rebuilds the tables that reference requests(id).
+//
+// Two defects are corrected here:
+//
+//  1. Every child table used a bare REFERENCES clause, so deleting a request
+//     during retention cleanup failed with a foreign key violation as long as
+//     any audit entry, notification, token, or idempotency key still pointed
+//     at it. Audit rows are retained far longer than requests by default, so
+//     request cleanup could never succeed. Audit rows now survive their
+//     request with a NULL reference; the transient child rows cascade.
+//
+//  2. notification_log restricted provider to the three push providers, so
+//     every generic-webhook delivery failed its CHECK and went unlogged.
+const migration003ReferentialCleanup = `
+CREATE TABLE audit_log_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    event_type TEXT NOT NULL,
+    request_id TEXT REFERENCES requests(id) ON DELETE SET NULL,
+    api_key_id TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
+    actor TEXT,
+    details TEXT,
+    ip_address TEXT
+);
+INSERT INTO audit_log_new (id, timestamp, event_type, request_id, api_key_id, actor, details, ip_address)
+    SELECT id, timestamp, event_type, request_id, api_key_id, actor, details, ip_address FROM audit_log;
+DROP TABLE audit_log;
+ALTER TABLE audit_log_new RENAME TO audit_log;
+CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
+CREATE INDEX idx_audit_type ON audit_log(event_type);
+CREATE INDEX idx_audit_request ON audit_log(request_id);
+
+CREATE TABLE notification_log_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed', 'callback_received')),
+    sent_at TEXT DEFAULT (datetime('now')),
+    callback_at TEXT,
+    error TEXT,
+    response TEXT,
+    message_id TEXT
+);
+INSERT INTO notification_log_new (id, request_id, provider, status, sent_at, callback_at, error, response, message_id)
+    SELECT id, request_id, provider, status, sent_at, callback_at, error, response, message_id FROM notification_log;
+DROP TABLE notification_log;
+ALTER TABLE notification_log_new RENAME TO notification_log;
+CREATE INDEX idx_notification_request ON notification_log(request_id);
+CREATE INDEX idx_notification_provider ON notification_log(provider, status);
+CREATE INDEX idx_notification_message_id ON notification_log(provider, message_id);
+
+CREATE TABLE decision_tokens_new (
+    token_hash TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    allowed_actions TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    consumed_action TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+INSERT INTO decision_tokens_new (token_hash, request_id, allowed_actions, expires_at, consumed_at, consumed_action, created_at)
+    SELECT token_hash, request_id, allowed_actions, expires_at, consumed_at, consumed_action, created_at FROM decision_tokens;
+DROP TABLE decision_tokens;
+ALTER TABLE decision_tokens_new RENAME TO decision_tokens;
+CREATE INDEX idx_decision_tokens_request ON decision_tokens(request_id);
+CREATE INDEX idx_decision_tokens_expires ON decision_tokens(expires_at) WHERE consumed_at IS NULL;
+
+CREATE TABLE idempotency_keys_new (
+    api_key_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (api_key_id, idempotency_key)
+);
+INSERT INTO idempotency_keys_new (api_key_id, idempotency_key, request_id, created_at)
+    SELECT api_key_id, idempotency_key, request_id, created_at FROM idempotency_keys;
+DROP TABLE idempotency_keys;
+ALTER TABLE idempotency_keys_new RENAME TO idempotency_keys;
+CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
 `

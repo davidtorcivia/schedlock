@@ -1,4 +1,4 @@
-// Package middleware provides CORS and security headers middleware.
+// Package middleware provides CORS and security response headers.
 package middleware
 
 import (
@@ -6,29 +6,36 @@ import (
 	"strings"
 )
 
-// CORS returns middleware that handles Cross-Origin Resource Sharing.
+// callbackPrefix is the only route family reachable cross-origin: notification
+// clients (ntfy actions, chat clients) POST decision callbacks from arbitrary
+// origins. Everything else is same-origin only.
+const callbackPrefix = "/api/callback/"
+
+// CORS permits cross-origin decision callbacks and rejects preflight for
+// everything else.
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		path := r.URL.Path
+		isCallback := strings.HasPrefix(r.URL.Path, callbackPrefix)
 
-		// Allow CORS for callback endpoints (used by ntfy, pushover, etc.)
-		// These endpoints are called by notification service clients
-		if origin != "" && strings.HasPrefix(path, "/api/callback/") {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
-			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+		if isCallback {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				// Credentials are never accepted cross-origin: the decision
+				// token in the URL is the only authority, so echoing the
+				// origin cannot be leveraged against a logged-in session.
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+			}
 		}
 
-		// Handle preflight requests
 		if r.Method == http.MethodOptions {
-			if strings.HasPrefix(path, "/api/callback/") {
+			if isCallback {
 				w.WriteHeader(http.StatusNoContent)
-				return
+			} else {
+				w.WriteHeader(http.StatusMethodNotAllowed)
 			}
-			// For non-callback paths, return 204 but without CORS headers
-			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -36,38 +43,48 @@ func CORS(next http.Handler) http.Handler {
 	})
 }
 
-// SecurityHeaders returns middleware that adds security headers.
-func SecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Prevent clickjacking
-		w.Header().Set("X-Frame-Options", "DENY")
+// SecurityHeaders sets the response headers that constrain how a browser may
+// treat SchedLock pages.
+//
+// The script policy carries real weight here: every page renders event titles,
+// locations, and descriptions written by an AI agent. Scripts may load only
+// from this origin, with no 'unsafe-inline', so injected markup that survived
+// escaping still could not execute. This is why the UI carries no inline
+// script or event-handler attributes.
+//
+// Styles still permit 'unsafe-inline' because the templates use style
+// attributes for layout; that is a presentational risk, not an execution one.
+// Google Fonts is the only off-origin source, and only for stylesheets and
+// font files.
+func SecurityHeaders(useTLS bool) func(http.Handler) http.Handler {
+	csp := strings.Join([]string{
+		"default-src 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+		"font-src 'self' https://fonts.gstatic.com",
+		"img-src 'self' data:",
+		"connect-src 'self'",
+		"form-action 'self'",
+		"base-uri 'none'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+	}, "; ")
 
-		// Prevent MIME type sniffing
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := w.Header()
+			header.Set("X-Frame-Options", "DENY")
+			header.Set("X-Content-Type-Options", "nosniff")
+			header.Set("Content-Security-Policy", csp)
+			header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			header.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=()")
+			header.Set("Cross-Origin-Opener-Policy", "same-origin")
 
-		// Enable XSS filter (for older browsers)
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
+			if useTLS {
+				header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
 
-		// Content Security Policy
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; "+
-			"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "+ // Tailwind CDN + HTMX
-			"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "+  // Tailwind CDN
-			"img-src 'self' data:; "+
-			"connect-src 'self'; "+
-			"frame-ancestors 'none'")
-
-		// Referrer Policy
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-
-		// Permissions Policy (formerly Feature Policy)
-		w.Header().Set("Permissions-Policy",
-			"geolocation=(), "+
-			"microphone=(), "+
-			"camera=(), "+
-			"payment=(), "+
-			"usb=()")
-
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }

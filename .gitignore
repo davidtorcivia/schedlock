@@ -27,6 +27,10 @@ vendor/
 .DS_Store
 Thumbs.db
 
+# Local scratch files
+cookies.txt
+config.yaml
+
 # Environment files (keep .env.example)
 .env
 .env.local

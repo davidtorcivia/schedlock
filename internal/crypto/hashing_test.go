@@ -174,10 +174,10 @@ func TestParseAPIKeyTier(t *testing.T) {
 		{"sk_read_12345678901234567890ab", "read"},
 		{"sk_write_12345678901234567890a", "write"},
 		{"sk_admin_12345678901234567890a", "admin"},
-		{"sk_invalid_1234567890123456789", ""},     // Invalid tier
-		{"invalid", ""},                             // No sk_ prefix
-		{"sk_read", ""},                             // Missing random part
-		{"sk_read_abc_def", ""},                     // Too many parts
+		{"sk_invalid_1234567890123456789", ""}, // Invalid tier
+		{"invalid", ""},                        // No sk_ prefix
+		{"sk_read", ""},                        // Missing random part
+		{"sk_read_abc_def", ""},                // Too many parts
 	}
 
 	for _, tt := range tests {
@@ -219,7 +219,7 @@ func TestGenerateBase62_OnlyContainsValidChars(t *testing.T) {
 		randomPart := parts[2]
 
 		for _, c := range randomPart {
-			if !strings.ContainsRune(base62Chars, c) {
+			if !strings.ContainsRune(base62Alphabet, c) {
 				t.Fatalf("Random part contains invalid character: %c in %s", c, randomPart)
 			}
 		}

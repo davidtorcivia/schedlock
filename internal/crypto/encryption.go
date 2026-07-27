@@ -1,100 +1,88 @@
-// Package crypto provides cryptographic utilities for the application.
+// Package crypto provides authenticated encryption for data at rest.
 package crypto
 
 import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/hkdf"
-	"crypto/sha256"
 )
 
-// Encryptor handles AES-256-GCM encryption for sensitive data like OAuth tokens.
+// ErrCiphertextTooShort is returned when input cannot contain a nonce.
+var ErrCiphertextTooShort = errors.New("ciphertext too short")
+
+// Encryptor performs AES-256-GCM encryption for OAuth tokens and provider
+// credentials. The AEAD is built once and is safe for concurrent use.
 type Encryptor struct {
-	key []byte // 32 bytes for AES-256
+	aead cipher.AEAD
 }
 
-// NewEncryptor creates a new Encryptor from a base64-encoded key or derives one from a secret.
+// NewEncryptor creates an Encryptor from a base64-encoded 32-byte key, or
+// derives a key via HKDF-SHA256 when the input is an arbitrary secret.
 func NewEncryptor(keyOrSecret string) (*Encryptor, error) {
-	// Try to decode as base64 first (32 bytes = 256 bits)
+	if keyOrSecret == "" {
+		return nil, errors.New("encryption key is required")
+	}
+
 	key, err := base64.StdEncoding.DecodeString(keyOrSecret)
-	if err == nil && len(key) == 32 {
-		return &Encryptor{key: key}, nil
+	if err != nil || len(key) != 32 {
+		key, err = deriveKey([]byte(keyOrSecret), "schedlock-encryption")
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive encryption key: %w", err)
+		}
 	}
 
-	// If not valid base64 or wrong length, derive key using HKDF
-	key, err = deriveKey([]byte(keyOrSecret), nil, "schedlock-encryption")
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
-	}
-
-	return &Encryptor{key: key}, nil
-}
-
-// deriveKey uses HKDF-SHA256 to derive a 32-byte key from input material.
-func deriveKey(secret, salt []byte, info string) ([]byte, error) {
-	if salt == nil {
-		salt = make([]byte, 32)
-	}
-
-	hkdfReader := hkdf.New(sha256.New, secret, salt, []byte(info))
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, key); err != nil {
-		return nil, err
-	}
-
-	return key, nil
-}
-
-// Encrypt encrypts plaintext using AES-256-GCM.
-// Returns base64-encoded ciphertext (nonce prepended).
-func (e *Encryptor) Encrypt(plaintext string) ([]byte, error) {
-	block, err := aes.NewCipher(e.key)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	aead, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
-	// Generate random nonce
-	nonce := make([]byte, gcm.NonceSize())
+	return &Encryptor{aead: aead}, nil
+}
+
+// deriveKey stretches arbitrary input into a 32-byte key with HKDF-SHA256.
+func deriveKey(secret []byte, info string) ([]byte, error) {
+	// A fixed (zero) salt keeps derivation deterministic across restarts, which
+	// is required to decrypt data written by a previous run. HKDF remains sound
+	// with a constant salt as long as the input keying material is secret.
+	salt := make([]byte, sha256.Size)
+
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, secret, salt, []byte(info)), key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// Encrypt seals plaintext, returning nonce||ciphertext.
+func (e *Encryptor) Encrypt(plaintext string) ([]byte, error) {
+	nonce := make([]byte, e.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
-
-	// Encrypt and prepend nonce
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return ciphertext, nil
+	return e.aead.Seal(nonce, nonce, []byte(plaintext), nil), nil
 }
 
-// Decrypt decrypts AES-256-GCM ciphertext.
-// Expects nonce to be prepended to ciphertext.
+// Decrypt opens a nonce||ciphertext value produced by Encrypt.
 func (e *Encryptor) Decrypt(ciphertext []byte) (string, error) {
-	block, err := aes.NewCipher(e.key)
-	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
-	}
-
-	nonceSize := gcm.NonceSize()
+	nonceSize := e.aead.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
+		return "", ErrCiphertextTooShort
 	}
 
-	// Extract nonce and decrypt
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	nonce, sealed := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := e.aead.Open(nil, nonce, sealed, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt: %w", err)
 	}
@@ -102,7 +90,7 @@ func (e *Encryptor) Decrypt(ciphertext []byte) (string, error) {
 	return string(plaintext), nil
 }
 
-// EncryptToBase64 encrypts and returns base64-encoded result.
+// EncryptToBase64 seals plaintext and base64-encodes the result.
 func (e *Encryptor) EncryptToBase64(plaintext string) (string, error) {
 	ciphertext, err := e.Encrypt(plaintext)
 	if err != nil {
@@ -111,7 +99,7 @@ func (e *Encryptor) EncryptToBase64(plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// DecryptFromBase64 decodes base64 and decrypts.
+// DecryptFromBase64 decodes and opens a base64-encoded ciphertext.
 func (e *Encryptor) DecryptFromBase64(encoded string) (string, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

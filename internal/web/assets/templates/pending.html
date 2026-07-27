@@ -1,0 +1,98 @@
+{{define "content"}}
+<div class="page-header">
+    <h1>Pending approvals</h1>
+    <p>Calendar changes waiting on your decision</p>
+</div>
+
+{{if .Requests}}
+<div class="card animate-fade-in-scale table-mobile-cards">
+    <div class="table-container">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Request</th>
+                    <th>Operation</th>
+                    <th>When</th>
+                    <th>Expires</th>
+                    <th style="text-align: right;">Decision</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Requests}}
+                <tr>
+                    <td>
+                        <a href="/requests/{{.ID}}" style="font-weight: 500;">{{.Summary}}</a>
+                        <div class="font-mono text-xs" style="color: var(--text-tertiary);">{{.ID}}</div>
+                    </td>
+                    <td><span class="badge badge-primary">{{operationLabel .Operation}}</span></td>
+                    <td>
+                        {{if .Details.StartTime}}{{.Details.StartTime}}{{else}}<span style="color: var(--text-muted);">&mdash;</span>{{end}}
+                    </td>
+                    <td>in {{relativeTo .ExpiresAt}}</td>
+                    <td style="text-align: right;">
+                        <div style="display: inline-flex; gap: var(--space-2);">
+                            <form action="/requests/{{.ID}}/approve" method="POST" style="display: inline;"
+                                  hx-post="/requests/{{.ID}}/approve" hx-swap="none">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                            </form>
+                            <form action="/requests/{{.ID}}/deny" method="POST" style="display: inline;"
+                                  hx-post="/requests/{{.ID}}/deny" hx-swap="none">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                            </form>
+                            <a href="/requests/{{.ID}}" class="btn btn-secondary btn-sm">Review</a>
+                        </div>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="mobile-cards">
+        {{range .Requests}}
+        <div class="mobile-card">
+            <div class="mobile-card-header">
+                <a href="/requests/{{.ID}}" class="mobile-card-id">{{.Summary}}</a>
+                <span class="badge badge-primary">{{operationLabel .Operation}}</span>
+            </div>
+            <div class="mobile-card-meta">
+                {{if .Details.StartTime}}
+                <div class="mobile-card-meta-row">
+                    <span class="mobile-card-meta-label">When</span>
+                    <span>{{.Details.StartTime}}</span>
+                </div>
+                {{end}}
+                <div class="mobile-card-meta-row">
+                    <span class="mobile-card-meta-label">Expires</span>
+                    <span>in {{relativeTo .ExpiresAt}}</span>
+                </div>
+            </div>
+            <div class="mobile-card-actions">
+                <form action="/requests/{{.ID}}/approve" method="POST"
+                      hx-post="/requests/{{.ID}}/approve" hx-swap="none">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                </form>
+                <form action="/requests/{{.ID}}/deny" method="POST"
+                      hx-post="/requests/{{.ID}}/deny" hx-swap="none">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                </form>
+                <a href="/requests/{{.ID}}" class="btn btn-secondary btn-sm">Review</a>
+            </div>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{else}}
+<div class="empty-state animate-fade-in">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <h3>Nothing waiting</h3>
+    <p>No calendar changes need your decision right now.</p>
+</div>
+{{end}}
+{{end}}

@@ -3,12 +3,15 @@ package requests
 import (
 	"context"
 	"encoding/json"
-	"strings"
+
 	"testing"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/database"
 )
+
+// testAPIKeyIDs are seeded so that requests satisfy the api_key_id foreign key.
+var testAPIKeyIDs = []string{"key_test123", "key_test", "key_a", "key_b", "key_owner", "key_other"}
 
 // setupTestDB creates an in-memory test database with the required schema.
 func setupTestDB(t *testing.T) *database.DB {
@@ -16,10 +19,17 @@ func setupTestDB(t *testing.T) *database.DB {
 
 	db, err := database.Open(":memory:")
 	if err != nil {
-		if strings.Contains(err.Error(), "requires cgo") {
-			t.Skip("SQLite driver requires cgo; set CGO_ENABLED=1 with a working C compiler")
-		}
 		t.Fatalf("Failed to create test database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	for _, id := range testAPIKeyIDs {
+		if _, err := db.Exec(`
+			INSERT INTO api_keys (id, key_hash, key_prefix, name, tier)
+			VALUES (?, ?, ?, ?, 'write')
+		`, id, "hash_"+id, "sk_write_"+id, id); err != nil {
+			t.Fatalf("Failed to seed API key %s: %v", id, err)
+		}
 	}
 
 	return db
@@ -414,9 +424,12 @@ func TestRepository_IdempotencyKey(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	err := repo.StoreIdempotencyKey(ctx, "key_test", "idem_abc123", req.ID)
+	claimed, err := repo.ClaimIdempotencyKey(ctx, "key_test", "idem_abc123", req.ID)
 	if err != nil {
-		t.Fatalf("StoreIdempotencyKey failed: %v", err)
+		t.Fatalf("ClaimIdempotencyKey failed: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected the first claim of an idempotency key to succeed")
 	}
 
 	// Find by idempotency key
@@ -445,7 +458,7 @@ func TestRepository_IdempotencyKey_WrongAPIKey(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	repo.StoreIdempotencyKey(ctx, "key_a", "idem_123", req.ID)
+	repo.ClaimIdempotencyKey(ctx, "key_a", "idem_123", req.ID)
 
 	// Try to find with different API key
 	found, _ := repo.FindByIdempotencyKey(ctx, "key_b", "idem_123")
@@ -495,12 +508,15 @@ func TestRepository_GetStats(t *testing.T) {
 	if stats.TotalPending != 1 {
 		t.Errorf("TotalPending wrong: got %d, want 1", stats.TotalPending)
 	}
-	if stats.TotalToday != 3 {
-		t.Errorf("TotalToday wrong: got %d, want 3", stats.TotalToday)
+	if stats.TotalLastDay != 3 {
+		t.Errorf("TotalLastDay wrong: got %d, want 3", stats.TotalLastDay)
 	}
 }
 
-func TestRepository_IncrementRetryCount(t *testing.T) {
+// TestRepository_ScheduleRetry checks that a failed execution is returned to
+// the approved state so a worker can claim it again. Leaving it marked
+// "executing" would strand the request forever.
+func TestRepository_ScheduleRetry(t *testing.T) {
 	repo, db := setupTestRepo(t)
 	defer db.Close()
 
@@ -513,18 +529,30 @@ func TestRepository_IncrementRetryCount(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	// Approve first
 	repo.UpdateStatus(ctx, req.ID, database.StatusApproved, "admin")
+	if _, err := repo.SetExecuting(ctx, req.ID); err != nil {
+		t.Fatalf("SetExecuting failed: %v", err)
+	}
 
-	// Increment retry count
-	err := repo.IncrementRetryCount(ctx, req.ID)
-	if err != nil {
-		t.Fatalf("IncrementRetryCount failed: %v", err)
+	if err := repo.ScheduleRetry(ctx, req.ID); err != nil {
+		t.Fatalf("ScheduleRetry failed: %v", err)
 	}
 
 	retrieved, _ := repo.GetByID(ctx, req.ID)
 	if retrieved.RetryCount != 1 {
 		t.Errorf("RetryCount wrong: got %d, want 1", retrieved.RetryCount)
+	}
+	if retrieved.Status != database.StatusApproved {
+		t.Errorf("a retry must return the request to approved, got %q", retrieved.Status)
+	}
+
+	// The request can be claimed again, which is what makes the retry effective.
+	claimed, err := repo.SetExecuting(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("SetExecuting after retry failed: %v", err)
+	}
+	if !claimed {
+		t.Error("expected the retried request to be claimable")
 	}
 }
 

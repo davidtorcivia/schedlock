@@ -1,0 +1,141 @@
+{{define "content"}}
+<div class="approve-page">
+    <div class="approve-brand">
+        <span>SchedLock</span>
+    </div>
+
+    {{if .Error}}
+    <div class="approve-card approve-card-result">
+        <div class="approve-result-icon approve-result-error">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+            </svg>
+        </div>
+        <h2 class="approve-result-title">{{.ErrorTitle}}</h2>
+        <p class="approve-result-message">{{.Error}}</p>
+        <a href="/login" class="btn btn-secondary">Sign in to SchedLock</a>
+    </div>
+
+    {{else if .Success}}
+    <div class="approve-card approve-card-result">
+        {{if eq .Action "approve"}}
+        <div class="approve-result-icon approve-result-success">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+        </div>
+        <h2 class="approve-result-title">Request approved</h2>
+        {{else}}
+        <div class="approve-result-icon approve-result-denied">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+            </svg>
+        </div>
+        <h2 class="approve-result-title">Request denied</h2>
+        {{end}}
+        <p class="approve-result-message">{{.Message}}</p>
+        <a href="/dashboard" class="btn btn-secondary">Open SchedLock</a>
+    </div>
+
+    {{else}}
+    <div class="approve-card">
+        <div class="approve-header">
+            <span class="badge badge-primary">Awaiting your decision</span>
+            <p class="approve-summary">
+                {{if eq .Request.Operation "create_event"}}
+                An agent is asking to <strong>create a calendar event</strong>{{with .Details.Title}} called &ldquo;{{.}}&rdquo;{{end}}.
+                {{else if eq .Request.Operation "update_event"}}
+                An agent is asking to <strong>change an existing calendar event</strong>{{with .Details.Title}}, retitling it &ldquo;{{.}}&rdquo;{{end}}.
+                {{else if eq .Request.Operation "delete_event"}}
+                An agent is asking to <strong>delete a calendar event</strong>.
+                {{else}}
+                An agent is asking to make a calendar change.
+                {{end}}
+            </p>
+            <p class="approve-expires">Expires in {{.ExpiresIn}}</p>
+        </div>
+
+        <div class="approve-details">
+            {{with .Details}}
+            {{if .Title}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Event</span>
+                <span class="approve-detail-value">{{.Title}}</span>
+            </div>
+            {{end}}
+            {{if .StartTime}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Starts</span>
+                <span class="approve-detail-value">{{.StartTime}}</span>
+            </div>
+            {{end}}
+            {{if .EndTime}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Ends</span>
+                <span class="approve-detail-value">{{.EndTime}}</span>
+            </div>
+            {{end}}
+            {{if .Location}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Where</span>
+                <span class="approve-detail-value">{{.Location}}</span>
+            </div>
+            {{end}}
+            {{if .Attendees}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Attendees</span>
+                <span class="approve-detail-value">{{.Attendees}}</span>
+            </div>
+            {{end}}
+            {{if .Description}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Description</span>
+                <span class="approve-detail-value approve-detail-multiline">{{.Description}}</span>
+            </div>
+            {{end}}
+            {{if .Calendar}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Calendar</span>
+                <span class="approve-detail-value">{{.Calendar}}</span>
+            </div>
+            {{end}}
+            {{if .EventID}}
+            <div class="approve-detail-row">
+                <span class="approve-detail-label">Existing event</span>
+                <span class="approve-detail-value">{{.EventID}}</span>
+            </div>
+            {{end}}
+            {{if .IsPartial}}
+            <p class="approve-detail-note">Only the fields shown above change. Everything else on the event stays as it is.</p>
+            {{end}}
+            {{end}}
+        </div>
+
+        <!-- One form with two submit buttons: the decision travels in the
+             button's value, so this page works with no script at all. -->
+        <form action="/approve/{{.Token}}" method="POST" class="approve-form">
+            {{if .RequiresPIN}}
+            <div class="approve-pin">
+                <label class="approve-pin-label" for="approval-pin">Enter your PIN to confirm</label>
+                <input type="password" id="approval-pin" name="pin" class="approve-pin-input"
+                       pattern="[0-9]*" inputmode="numeric" maxlength="8"
+                       autocomplete="off" required autofocus>
+                {{if .PINError}}
+                <p class="approve-pin-error">{{.PINError}}</p>
+                {{end}}
+            </div>
+            {{end}}
+
+            <div class="approve-actions">
+                <button type="submit" name="action" value="approve" class="btn btn-success btn-lg">Approve</button>
+                <button type="submit" name="action" value="deny" class="btn btn-danger btn-lg">Deny</button>
+            </div>
+        </form>
+
+        <div class="approve-footer">
+            <a href="/login?redirect=%2Frequests%2F{{.Request.ID}}" class="approve-link">Sign in for the full request</a>
+        </div>
+    </div>
+    {{end}}
+</div>
+{{end}}

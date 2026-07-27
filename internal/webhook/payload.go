@@ -2,8 +2,11 @@ package webhook
 
 import "encoding/json"
 
-// WebhookPayload represents the payload sent to Moltbot.
-type WebhookPayload struct {
+// EventRequestStatus is the event name used for request lifecycle updates.
+const EventRequestStatus = "request.status"
+
+// Payload is the JSON body delivered to the calling system.
+type Payload struct {
 	Event      string          `json:"event"`
 	RequestID  string          `json:"request_id"`
 	Status     string          `json:"status"`
@@ -12,14 +15,3 @@ type WebhookPayload struct {
 	Result     json.RawMessage `json:"result,omitempty"`
 	Timestamp  string          `json:"timestamp"`
 }
-
-// Event types for webhooks.
-const (
-	EventRequestStatus   = "request.status"
-	EventRequestApproved = "request.approved"
-	EventRequestDenied   = "request.denied"
-	EventRequestExpired  = "request.expired"
-	EventRequestComplete = "request.completed"
-	EventRequestFailed   = "request.failed"
-	EventSuggestion      = "request.suggestion"
-)

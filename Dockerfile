@@ -1,56 +1,48 @@
-# Build stage
+# syntax=docker/dockerfile:1
+
+# ---- Build ------------------------------------------------------------------
 FROM golang:1.22-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache gcc musl-dev
+WORKDIR /src
 
-WORKDIR /app
-
-# Copy go mod files
+# Dependencies are resolved in their own layer so source edits do not re-download
+# the module cache.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /schedlock ./cmd/server
+# CGO is off: the SQLite driver is pure Go, so this produces a static binary
+# with no C toolchain here and no shared libraries at runtime.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w -X github.com/dtorcivia/schedlock/internal/server.Version=${VERSION}" \
+    -o /out/schedlock ./cmd/server
 
-# Runtime stage
+# ---- Runtime ----------------------------------------------------------------
 FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# ca-certificates is needed to reach Google and the notification providers.
+# The timezone database is compiled into the binary, so tzdata is not installed.
+RUN apk add --no-cache ca-certificates wget && \
+    adduser -D -H -u 10001 schedlock
 
-# Create non-root user
-RUN adduser -D -g '' schedlock
+# Templates and static assets are embedded in the binary, so the image holds
+# only the executable and its data directory.
+COPY --from=builder /out/schedlock /usr/local/bin/schedlock
 
-WORKDIR /app
+RUN mkdir -p /data && chown schedlock:schedlock /data
+VOLUME ["/data"]
 
-# Copy binary from builder
-COPY --from=builder /schedlock /app/schedlock
+USER schedlock:schedlock
+WORKDIR /data
 
-# Copy templates and static files
-COPY web/templates /app/web/templates
-COPY web/static /app/web/static
-
-# Create data directory
-RUN mkdir -p /app/data && chown -R schedlock:schedlock /app
-
-# Switch to non-root user
-USER schedlock
-
-# Expose port
 EXPOSE 8080
 
-# Health check
+ENV SCHEDLOCK_DATA_DIR=/data
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
-# Environment variables
-ENV SCHEDLOCK_DATA_DIR=/app/data \
-    SCHEDLOCK_TEMPLATES_DIR=/app/web/templates \
-    SCHEDLOCK_STATIC_DIR=/app/web/static
-
-# Run the application
-ENTRYPOINT ["/app/schedlock"]
+ENTRYPOINT ["/usr/local/bin/schedlock"]

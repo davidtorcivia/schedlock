@@ -2,9 +2,9 @@ package telegram
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,23 +13,27 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// Update represents a Telegram webhook update.
+// maxUpdateBytes bounds an incoming webhook body. The endpoint is reachable
+// from the internet, so it must not accept an unbounded upload.
+const maxUpdateBytes = 1 << 20
+
+// Update is an incoming Telegram update.
 type Update struct {
 	UpdateID      int64          `json:"update_id"`
 	Message       *Message       `json:"message,omitempty"`
 	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
-// Message represents a Telegram message.
+// Message is a Telegram message.
 type Message struct {
-	MessageID      int64   `json:"message_id"`
-	From           *User   `json:"from,omitempty"`
-	Chat           *Chat   `json:"chat"`
-	Text           string  `json:"text,omitempty"`
+	MessageID      int64    `json:"message_id"`
+	From           *User    `json:"from,omitempty"`
+	Chat           *Chat    `json:"chat"`
+	Text           string   `json:"text,omitempty"`
 	ReplyToMessage *Message `json:"reply_to_message,omitempty"`
 }
 
-// CallbackQuery represents a callback from an inline keyboard button.
+// CallbackQuery is an inline keyboard button press.
 type CallbackQuery struct {
 	ID      string   `json:"id"`
 	From    *User    `json:"from"`
@@ -37,7 +41,7 @@ type CallbackQuery struct {
 	Data    string   `json:"data,omitempty"`
 }
 
-// User represents a Telegram user.
+// User is a Telegram user.
 type User struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
@@ -45,250 +49,205 @@ type User struct {
 	Username  string `json:"username,omitempty"`
 }
 
-// Chat represents a Telegram chat.
+// Chat is a Telegram chat.
 type Chat struct {
 	ID   int64  `json:"id"`
 	Type string `json:"type"`
 }
 
-// WebhookHandler handles incoming Telegram webhook requests.
+// WebhookHandler receives Telegram updates and turns them into decisions.
 type WebhookHandler struct {
 	provider        *Provider
 	callbackHandler notifications.CallbackHandler
-	notificationMgr *notifications.Manager
+	manager         *notifications.Manager
 }
 
-// NewWebhookHandler creates a new webhook handler.
-func NewWebhookHandler(provider *Provider, callbackHandler notifications.CallbackHandler, notificationMgr *notifications.Manager) *WebhookHandler {
+// NewWebhookHandler creates a Telegram webhook handler.
+func NewWebhookHandler(provider *Provider, callbackHandler notifications.CallbackHandler, manager *notifications.Manager) *WebhookHandler {
 	return &WebhookHandler{
 		provider:        provider,
 		callbackHandler: callbackHandler,
-		notificationMgr: notificationMgr,
+		manager:         manager,
 	}
 }
 
-// ServeHTTP handles incoming webhook requests.
+// ServeHTTP handles an incoming Telegram update.
+//
+// Two independent checks gate every update. The shared secret proves the
+// request came from Telegram, and the chat ID check proves it came from the
+// chat the operator configured. Without the secret this endpoint would accept
+// approvals from anyone who could guess a chat ID, so an unconfigured secret
+// closes the endpoint rather than opening it.
 func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Validate Telegram secret token if configured
-	if h.provider.config.WebhookSecret != "" {
-		secret := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
-		if secret != h.provider.config.WebhookSecret {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+	secret := h.provider.WebhookSecret()
+	if secret == "" {
+		util.Warn("Rejecting Telegram webhook: no webhook secret is configured")
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		util.Error("Failed to read webhook body", "error", err)
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	presented := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(secret)) != 1 {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var update Update
-	if err := json.Unmarshal(body, &update); err != nil {
-		util.Error("Failed to parse webhook update", "error", err)
-		http.Error(w, "Failed to parse update", http.StatusBadRequest)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUpdateBytes)).Decode(&update); err != nil {
+		util.Warn("Failed to parse Telegram update", "error", err)
+		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
 	ctx := r.Context()
-
-	// Handle callback queries (button presses)
-	if update.CallbackQuery != nil {
+	switch {
+	case update.CallbackQuery != nil:
 		h.handleCallbackQuery(ctx, update.CallbackQuery)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Handle message replies (suggestions)
-	if update.Message != nil && update.Message.ReplyToMessage != nil {
+	case update.Message != nil && update.Message.ReplyToMessage != nil:
 		h.handleReply(ctx, update.Message)
-		w.WriteHeader(http.StatusOK)
-		return
 	}
 
+	// Telegram retries on a non-2xx response, so an update that cannot be acted
+	// on is still acknowledged.
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleCallbackQuery processes inline keyboard button presses.
+// handleCallbackQuery processes an approve/deny button press.
 func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, query *CallbackQuery) {
-	// Answer the callback query to remove loading state
-	h.answerCallbackQuery(ctx, query.ID, "")
-
-	// Parse callback data: "action:request_id"
-	parts := strings.SplitN(query.Data, ":", 2)
-	if len(parts) != 2 {
-		util.Warn("Invalid callback data", "data", query.Data)
-		return
+	if err := h.provider.AnswerCallbackQuery(ctx, query.ID, ""); err != nil {
+		util.Debug("Failed to acknowledge callback query", "error", err)
 	}
-
-	action := parts[0]
-	requestID := parts[1]
 
 	if query.Message == nil || query.Message.Chat == nil {
-		util.Warn("Missing chat info in callback query", "request_id", requestID)
+		util.Warn("Ignoring Telegram callback without chat context")
 		return
 	}
-
-	// Enforce allowed chat ID
 	if !h.isAllowedChat(query.Message.Chat.ID) {
-		util.Warn("Unauthorized chat for callback", "chat_id", query.Message.Chat.ID)
+		util.Warn("Ignoring Telegram callback from an unauthorized chat", "chat_id", query.Message.Chat.ID)
 		return
 	}
 
-	// Handle test button
-	if action == "test" {
-		h.answerCallbackQuery(ctx, query.ID, "Test button clicked!")
+	action, requestID, found := strings.Cut(query.Data, ":")
+	if !found {
+		util.Warn("Ignoring malformed Telegram callback data")
 		return
 	}
 
-	// Handle noop (already processed)
-	if action == "noop" {
+	switch action {
+	case "noop":
+		return
+	case "approve", "deny":
+	default:
+		util.Warn("Ignoring unknown Telegram callback action", "action", action)
 		return
 	}
 
-	// Only allow approve/deny actions
-	if action != "approve" && action != "deny" {
-		util.Warn("Unknown callback action", "action", action)
-		return
-	}
-
-	// Get user info for audit
-	respondedBy := "telegram"
-	if query.From != nil {
-		if query.From.Username != "" {
-			respondedBy = fmt.Sprintf("telegram:@%s", query.From.Username)
-		} else {
-			respondedBy = fmt.Sprintf("telegram:%s %s", query.From.FirstName, query.From.LastName)
-		}
-	}
-
-	// Create callback
 	callback := &notifications.Callback{
-		Provider:    "telegram",
+		Provider:    notifications.ProviderTelegram,
 		RequestID:   requestID,
 		Action:      action,
-		RespondedBy: respondedBy,
+		MessageID:   strconv.FormatInt(query.Message.MessageID, 10),
+		ChatID:      strconv.FormatInt(query.Message.Chat.ID, 10),
+		RespondedBy: describeUser(query.From),
 	}
 
-	if query.Message != nil {
-		callback.MessageID = fmt.Sprintf("%d", query.Message.MessageID)
-		callback.ChatID = fmt.Sprintf("%d", query.Message.Chat.ID)
-	}
-
-	// Process the callback
 	if err := h.callbackHandler.HandleCallback(ctx, callback); err != nil {
-		util.Error("Failed to handle callback", "error", err, "request_id", requestID)
-		h.answerCallbackQuery(ctx, query.ID, "Error: "+err.Error())
+		util.Error("Failed to handle Telegram callback", "error", err, "request_id", requestID)
+		if err := h.provider.AnswerCallbackQuery(ctx, query.ID, friendlyError(err)); err != nil {
+			util.Debug("Failed to report callback error", "error", err)
+		}
 		return
 	}
 
-	// Update the message to remove the keyboard
-	if query.Message != nil {
-		status := "approved"
-		if action == "deny" {
-			status = "denied"
-		}
-		h.provider.RemoveKeyboard(ctx, query.Message.MessageID, status)
+	outcome := "Approved"
+	if action == "deny" {
+		outcome = "Denied"
+	}
+	if err := h.provider.ReplaceKeyboard(ctx, query.Message.MessageID, outcome); err != nil {
+		util.Debug("Failed to update Telegram keyboard", "error", err)
 	}
 
-	util.Info("Processed Telegram callback",
-		"action", action,
-		"request_id", requestID,
-		"responded_by", respondedBy,
-	)
+	util.Info("Processed Telegram decision",
+		"action", action, "request_id", requestID, "responded_by", callback.RespondedBy)
 }
 
-// handleReply processes message replies as suggestions.
+// handleReply turns a reply to a notification into a change suggestion.
 func (h *WebhookHandler) handleReply(ctx context.Context, msg *Message) {
-	// Find the original notification by message ID
-	originalMsgID := fmt.Sprintf("%d", msg.ReplyToMessage.MessageID)
-
 	if msg.Chat == nil || !h.isAllowedChat(msg.Chat.ID) {
-		util.Warn("Unauthorized chat for suggestion", "chat_id", msg.Chat.ID)
+		util.Warn("Ignoring Telegram reply from an unauthorized chat")
+		return
+	}
+	if strings.TrimSpace(msg.Text) == "" {
 		return
 	}
 
-	notifLog, err := h.notificationMgr.FindByMessageID(ctx, "telegram", originalMsgID)
-	if err != nil || notifLog == nil {
-		util.Warn("Could not find notification for reply", "message_id", originalMsgID)
+	originalMsgID := strconv.FormatInt(msg.ReplyToMessage.MessageID, 10)
+
+	record, err := h.manager.FindByMessageID(ctx, notifications.ProviderTelegram, originalMsgID)
+	if err != nil || record == nil {
+		util.Warn("No request matches the replied-to Telegram message", "message_id", originalMsgID)
 		return
 	}
 
-	// Get user info
-	respondedBy := "telegram"
-	if msg.From != nil {
-		if msg.From.Username != "" {
-			respondedBy = fmt.Sprintf("telegram:@%s", msg.From.Username)
-		} else {
-			respondedBy = fmt.Sprintf("telegram:%s %s", msg.From.FirstName, msg.From.LastName)
-		}
-	}
-
-	// Create suggestion callback
 	callback := &notifications.Callback{
-		Provider:    "telegram",
-		RequestID:   notifLog.RequestID,
+		Provider:    notifications.ProviderTelegram,
+		RequestID:   record.RequestID,
 		Action:      "suggest",
 		Suggestion:  msg.Text,
 		MessageID:   originalMsgID,
-		ChatID:      fmt.Sprintf("%d", msg.Chat.ID),
-		RespondedBy: respondedBy,
+		ChatID:      strconv.FormatInt(msg.Chat.ID, 10),
+		RespondedBy: describeUser(msg.From),
 	}
 
-	// Process the suggestion
 	if err := h.callbackHandler.HandleCallback(ctx, callback); err != nil {
-		util.Error("Failed to handle suggestion", "error", err, "request_id", notifLog.RequestID)
+		util.Error("Failed to record Telegram suggestion", "error", err, "request_id", record.RequestID)
+		if err := h.provider.SendReply(ctx, msg.Chat.ID, msg.MessageID, friendlyError(err)); err != nil {
+			util.Debug("Failed to report suggestion error", "error", err)
+		}
 		return
 	}
 
-	// Update the original message
-	h.provider.RemoveKeyboard(ctx, msg.ReplyToMessage.MessageID, "change_requested")
-
-	// Send confirmation
-	h.sendReply(ctx, msg.Chat.ID, msg.MessageID, "Suggestion recorded. The request has been updated.")
+	if err := h.provider.ReplaceKeyboard(ctx, msg.ReplyToMessage.MessageID, "Changes requested"); err != nil {
+		util.Debug("Failed to update Telegram keyboard", "error", err)
+	}
+	if err := h.provider.SendReply(ctx, msg.Chat.ID, msg.MessageID,
+		"Suggestion recorded. The request has been returned to the requester."); err != nil {
+		util.Debug("Failed to confirm suggestion", "error", err)
+	}
 
 	util.Info("Processed Telegram suggestion",
-		"request_id", notifLog.RequestID,
-		"responded_by", respondedBy,
-	)
+		"request_id", record.RequestID, "responded_by", callback.RespondedBy)
 }
 
+// isAllowedChat reports whether decisions from a chat are accepted.
 func (h *WebhookHandler) isAllowedChat(chatID int64) bool {
-	if h.provider == nil || h.provider.config == nil || h.provider.config.ChatID == "" {
+	configured := h.provider.ChatID()
+	if configured == "" {
 		return false
 	}
-	return fmt.Sprintf("%d", chatID) == h.provider.config.ChatID
+	return strconv.FormatInt(chatID, 10) == configured
 }
 
-// answerCallbackQuery acknowledges a callback query.
-func (h *WebhookHandler) answerCallbackQuery(ctx context.Context, queryID, text string) {
-	req := map[string]interface{}{
-		"callback_query_id": queryID,
+func describeUser(user *User) string {
+	if user == nil {
+		return "telegram"
 	}
-	if text != "" {
-		req["text"] = text
-		req["show_alert"] = true
+	if user.Username != "" {
+		return "telegram:@" + user.Username
 	}
-
-	data, _ := json.Marshal(req)
-	h.provider.apiCall(ctx, "answerCallbackQuery", data)
+	name := strings.TrimSpace(user.FirstName + " " + user.LastName)
+	if name == "" {
+		return fmt.Sprintf("telegram:%d", user.ID)
+	}
+	return "telegram:" + name
 }
 
-// sendReply sends a reply to a message.
-func (h *WebhookHandler) sendReply(ctx context.Context, chatID, replyToMsgID int64, text string) {
-	req := map[string]interface{}{
-		"chat_id":             strconv.FormatInt(chatID, 10),
-		"text":                text,
-		"reply_to_message_id": replyToMsgID,
-	}
-
-	data, _ := json.Marshal(req)
-	h.provider.apiCall(ctx, "sendMessage", data)
+// friendlyError renders an error for display in a chat.
+func friendlyError(err error) string {
+	return util.TruncateString(err.Error(), 180)
 }

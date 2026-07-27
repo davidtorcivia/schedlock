@@ -1,16 +1,34 @@
-// Package tokens provides decision token management for approval callbacks.
+// Package tokens provides single-use decision tokens for approval callbacks.
 package tokens
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
 	"github.com/dtorcivia/schedlock/internal/util"
+)
+
+// Errors returned when a token cannot be used. They are safe to show to the
+// person clicking an approval link.
+var (
+	ErrTokenNotFound = errors.New("this approval link is not valid")
+	ErrTokenConsumed = errors.New("this approval link has already been used")
+	ErrTokenExpired  = errors.New("this approval link has expired")
+	ErrActionAllowed = errors.New("this approval link does not permit that action")
+)
+
+// Actions a decision token may authorize.
+const (
+	ActionApprove = "approve"
+	ActionDeny    = "deny"
+	ActionSuggest = "suggest"
 )
 
 // Repository handles decision token storage and validation.
@@ -23,202 +41,120 @@ func NewRepository(db *database.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// Create generates and stores a new decision token for a request.
-// Returns the token (to be used in URLs) - store the hash only.
+// Create generates and stores a decision token for a request, returning the
+// token itself. Only its hash is persisted, so a database disclosure does not
+// hand an attacker usable approval links.
 func (r *Repository) Create(ctx context.Context, requestID string, expiresAt time.Time) (string, error) {
 	token, hash, err := crypto.GenerateDecisionToken()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate token: %w", err)
 	}
 
-	allowedActions, _ := json.Marshal([]string{"approve", "deny", "suggest"})
+	allowedActions, err := json.Marshal([]string{ActionApprove, ActionDeny, ActionSuggest})
+	if err != nil {
+		return "", fmt.Errorf("failed to encode allowed actions: %w", err)
+	}
 
-	_, err = r.db.ExecContext(ctx, `
+	if _, err := r.db.ExecContext(ctx, `
 		INSERT INTO decision_tokens (token_hash, request_id, allowed_actions, expires_at)
 		VALUES (?, ?, ?, ?)
-	`, hash, requestID, string(allowedActions), util.SQLiteTimestamp(expiresAt))
-
-	if err != nil {
+	`, hash, requestID, string(allowedActions), util.SQLiteTimestamp(expiresAt)); err != nil {
 		return "", fmt.Errorf("failed to store token: %w", err)
 	}
 
 	return token, nil
 }
 
-// ValidateResult contains the result of token validation.
+// ValidateResult describes a token that has been looked up but not consumed.
 type ValidateResult struct {
 	RequestID      string
 	AllowedActions []string
-	Valid          bool
-	Error          string
 }
 
-// Validate checks if a token is valid without consuming it.
+// Validate checks that a token exists, is unconsumed, and has not expired,
+// without consuming it. The returned error is one of the sentinel errors above.
 func (r *Repository) Validate(ctx context.Context, token string) (*ValidateResult, error) {
 	hash := crypto.HashSHA256(token)
 
 	var (
-		requestID      string
-		allowedJSON    string
-		expiresAt      string
-		consumedAt     sql.NullString
-		consumedAction sql.NullString
+		requestID   string
+		allowedJSON string
+		expiresAt   string
+		consumedAt  sql.NullString
 	)
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT request_id, allowed_actions, expires_at, consumed_at, consumed_action
+		SELECT request_id, allowed_actions, expires_at, consumed_at
 		FROM decision_tokens
 		WHERE token_hash = ?
-	`, hash).Scan(&requestID, &allowedJSON, &expiresAt, &consumedAt, &consumedAction)
+	`, hash).Scan(&requestID, &allowedJSON, &expiresAt, &consumedAt)
 
-	if err == sql.ErrNoRows {
-		return &ValidateResult{Valid: false, Error: "token not found"}, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Check if already consumed
 	if consumedAt.Valid {
-		return &ValidateResult{
-			RequestID: requestID,
-			Valid:     false,
-			Error:     fmt.Sprintf("token already used for action: %s", consumedAction.String),
-		}, nil
+		return nil, ErrTokenConsumed
 	}
 
-	// Check if expired
-	expires, _ := util.ParseSQLiteTimestamp(expiresAt)
-	if time.Now().After(expires) {
-		return &ValidateResult{
-			RequestID: requestID,
-			Valid:     false,
-			Error:     "token expired",
-		}, nil
+	expires, err := util.ParseSQLiteTimestamp(expiresAt)
+	if err != nil || !time.Now().Before(expires) {
+		return nil, ErrTokenExpired
 	}
 
-	// Parse allowed actions
 	var allowedActions []string
-	json.Unmarshal([]byte(allowedJSON), &allowedActions)
+	if err := json.Unmarshal([]byte(allowedJSON), &allowedActions); err != nil {
+		return nil, fmt.Errorf("corrupt allowed_actions for token: %w", err)
+	}
 
-	return &ValidateResult{
-		RequestID:      requestID,
-		AllowedActions: allowedActions,
-		Valid:          true,
-	}, nil
+	return &ValidateResult{RequestID: requestID, AllowedActions: allowedActions}, nil
 }
 
-// Consume validates and consumes a token in a single atomic operation.
-// Returns the request ID if successful.
+// Consume validates a token and marks it used in one atomic step, returning the
+// request it authorizes. Concurrent callers race on the conditional UPDATE, so
+// exactly one of them can act on a given token.
 func (r *Repository) Consume(ctx context.Context, token, action string) (string, error) {
-	// First validate
 	result, err := r.Validate(ctx, token)
 	if err != nil {
 		return "", err
 	}
 
-	if !result.Valid {
-		return "", fmt.Errorf(result.Error)
+	if !slices.Contains(result.AllowedActions, action) {
+		return "", ErrActionAllowed
 	}
 
-	// Check if action is allowed
-	actionAllowed := false
-	for _, a := range result.AllowedActions {
-		if a == action {
-			actionAllowed = true
-			break
-		}
-	}
-	if !actionAllowed {
-		return "", fmt.Errorf("action %q not allowed for this token", action)
-	}
-
-	// Atomically consume the token
-	hash := crypto.HashSHA256(token)
 	sqlResult, err := r.db.ExecContext(ctx, `
 		UPDATE decision_tokens
 		SET consumed_at = datetime('now'), consumed_action = ?
 		WHERE token_hash = ? AND consumed_at IS NULL
-	`, action, hash)
-
+	`, action, crypto.HashSHA256(token))
 	if err != nil {
 		return "", fmt.Errorf("failed to consume token: %w", err)
 	}
 
-	rowsAffected, _ := sqlResult.RowsAffected()
+	rowsAffected, err := sqlResult.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("failed to consume token: %w", err)
+	}
 	if rowsAffected == 0 {
-		// Token was consumed by another request (race condition)
-		return "", fmt.Errorf("token already consumed")
+		// Another request consumed the token between Validate and here.
+		return "", ErrTokenConsumed
 	}
 
 	return result.RequestID, nil
 }
 
-// GetByRequestID retrieves all tokens for a request.
-func (r *Repository) GetByRequestID(ctx context.Context, requestID string) ([]database.DecisionToken, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT token_hash, request_id, allowed_actions, expires_at, consumed_at, consumed_action, created_at
-		FROM decision_tokens
-		WHERE request_id = ?
-	`, requestID)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var tokens []database.DecisionToken
-	for rows.Next() {
-		var (
-			tok         database.DecisionToken
-			allowedJSON string
-			expiresAt   string
-			consumedAt  sql.NullString
-			createdAt   string
-		)
-
-		if err := rows.Scan(
-			&tok.TokenHash, &tok.RequestID, &allowedJSON,
-			&expiresAt, &consumedAt, &tok.ConsumedAction, &createdAt,
-		); err != nil {
-			return nil, err
-		}
-
-		json.Unmarshal([]byte(allowedJSON), &tok.AllowedActions)
-		tok.ExpiresAt, _ = util.ParseSQLiteTimestamp(expiresAt)
-		tok.CreatedAt, _ = util.ParseSQLiteTimestamp(createdAt)
-
-		if consumedAt.Valid {
-			t, _ := util.ParseSQLiteTimestamp(consumedAt.String)
-			tok.ConsumedAt = sql.NullTime{Time: t, Valid: true}
-		}
-
-		tokens = append(tokens, tok)
-	}
-
-	return tokens, rows.Err()
-}
-
-// DeleteExpired removes all expired tokens.
+// DeleteExpired removes tokens that can no longer be used.
 func (r *Repository) DeleteExpired(ctx context.Context) (int64, error) {
 	result, err := r.db.ExecContext(ctx, `
 		DELETE FROM decision_tokens
 		WHERE expires_at < datetime('now')
 	`)
-
 	if err != nil {
 		return 0, err
 	}
-
 	return result.RowsAffected()
-}
-
-// DeleteByRequestID removes all tokens for a request.
-func (r *Repository) DeleteByRequestID(ctx context.Context, requestID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM decision_tokens
-		WHERE request_id = ?
-	`, requestID)
-
-	return err
 }

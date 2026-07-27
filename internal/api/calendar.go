@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/apikeys"
@@ -16,549 +16,497 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// ListCalendars returns all accessible calendars.
+// maxListResults caps how many events one page may return.
+const maxListResults = 250
+
+// ListCalendars returns the calendars this key may see.
 func (h *Handler) ListCalendars(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
-	ctx := r.Context()
-	calendars, err := h.calendarClient.ListCalendars(ctx)
+	calendars, err := h.calendarClient.ListCalendars(r.Context())
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to list calendars", err)
+		response.WriteUpstreamError(w, "Failed to list calendars", err)
 		return
 	}
 
+	// A key restricted to specific calendars must not learn that the others
+	// exist.
 	if authKey.Constraints != nil && len(authKey.Constraints.CalendarAllowlist) > 0 {
-		calendars = filterCalendars(calendars, authKey.Constraints.CalendarAllowlist)
+		filtered := make([]google.Calendar, 0, len(calendars))
+		for _, cal := range calendars {
+			if apikeys.CalendarAllowed(cal.ID, authKey.Constraints.CalendarAllowlist) {
+				filtered = append(filtered, cal)
+			}
+		}
+		calendars = filtered
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"calendars": calendars,
-	})
+	response.JSON(w, http.StatusOK, map[string]any{"calendars": calendars})
 }
 
-// ListEvents returns events from a calendar.
+// ListEvents returns events from one calendar.
 func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
 	calendarID := r.PathValue("calendarId")
-	if calendarID == "" {
-		response.Error(w, http.StatusBadRequest, "calendar ID required", nil)
+	if !h.calendarPermitted(w, authKey, calendarID) {
 		return
 	}
 
-	if authKey.Constraints != nil && len(authKey.Constraints.CalendarAllowlist) > 0 {
-		if !calendarAllowed(calendarID, authKey.Constraints.CalendarAllowlist) {
-			response.WriteConstraintViolation(w, "calendar_allowlist", "calendar not in allowlist")
+	query := r.URL.Query()
+
+	timeMin := time.Now()
+	if raw := query.Get("timeMin"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			response.WriteValidationError(w, "invalid timeMin (expected RFC3339)")
 			return
 		}
+		timeMin = parsed
 	}
 
-	// Parse query parameters
-	var timeMin, timeMax time.Time
-	var err error
-
-	if minStr := r.URL.Query().Get("timeMin"); minStr != "" {
-		timeMin, err = time.Parse(time.RFC3339, minStr)
+	timeMax := timeMin.AddDate(0, 1, 0)
+	if raw := query.Get("timeMax"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid timeMin format (use RFC3339)", nil)
+			response.WriteValidationError(w, "invalid timeMax (expected RFC3339)")
 			return
 		}
-	} else {
-		timeMin = time.Now()
+		timeMax = parsed
 	}
 
-	if maxStr := r.URL.Query().Get("timeMax"); maxStr != "" {
-		timeMax, err = time.Parse(time.RFC3339, maxStr)
-		if err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid timeMax format (use RFC3339)", nil)
-			return
-		}
-	} else {
-		timeMax = timeMin.AddDate(0, 1, 0) // Default to 1 month
+	if !timeMax.After(timeMin) {
+		response.WriteValidationError(w, "timeMax must be after timeMin")
+		return
 	}
 
 	maxResults := 50
-	if maxStr := r.URL.Query().Get("maxResults"); maxStr != "" {
-		if n, err := strconv.Atoi(maxStr); err == nil && n > 0 && n <= 250 {
-			maxResults = n
-		}
-	}
-	pageToken := r.URL.Query().Get("pageToken")
-	queryText := r.URL.Query().Get("q")
-	singleEvents := true
-	if singleStr := r.URL.Query().Get("singleEvents"); singleStr != "" {
-		if singleEvents, err = strconv.ParseBool(singleStr); err != nil {
-			response.Error(w, http.StatusBadRequest, "invalid singleEvents value", nil)
+	if raw := query.Get("maxResults"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxListResults {
+			response.WriteValidationError(w, "maxResults must be between 1 and "+strconv.Itoa(maxListResults))
 			return
 		}
+		maxResults = parsed
 	}
-	orderBy := r.URL.Query().Get("orderBy")
 
-	ctx := r.Context()
-	eventsResp, err := h.calendarClient.ListEvents(ctx, google.EventListOptions{
+	singleEvents := true
+	if raw := query.Get("singleEvents"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			response.WriteValidationError(w, "invalid singleEvents (expected true or false)")
+			return
+		}
+		singleEvents = parsed
+	}
+
+	orderBy := query.Get("orderBy")
+	switch orderBy {
+	case "", "startTime", "updated":
+	default:
+		response.WriteValidationError(w, "orderBy must be startTime or updated")
+		return
+	}
+	// Google rejects ordering by start time unless recurrences are expanded.
+	if orderBy == "startTime" && !singleEvents {
+		response.WriteValidationError(w, "orderBy=startTime requires singleEvents=true")
+		return
+	}
+
+	events, err := h.calendarClient.ListEvents(r.Context(), google.EventListOptions{
 		CalendarID:   calendarID,
 		TimeMin:      timeMin,
 		TimeMax:      timeMax,
 		MaxResults:   maxResults,
-		PageToken:    pageToken,
-		Query:        queryText,
+		PageToken:    query.Get("pageToken"),
+		Query:        query.Get("q"),
 		SingleEvents: singleEvents,
 		OrderBy:      orderBy,
 	})
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to list events", err)
+		response.WriteUpstreamError(w, "Failed to list events", err)
 		return
 	}
 
-	resp := map[string]interface{}{
-		"events": eventsResp.Events,
+	body := map[string]any{"events": events.Events}
+	if events.NextPageToken != "" {
+		body["next_page_token"] = events.NextPageToken
 	}
-	if eventsResp.NextPageToken != "" {
-		resp["next_page_token"] = eventsResp.NextPageToken
-	}
-	response.JSON(w, http.StatusOK, resp)
+	response.JSON(w, http.StatusOK, body)
 }
 
-// GetEvent returns a single event.
+// GetEvent returns one event.
 func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
 	calendarID := r.PathValue("calendarId")
 	eventID := r.PathValue("eventId")
-
-	if calendarID == "" || eventID == "" {
-		response.Error(w, http.StatusBadRequest, "calendar ID and event ID required", nil)
+	if eventID == "" {
+		response.WriteValidationError(w, "eventId is required")
+		return
+	}
+	if !h.calendarPermitted(w, authKey, calendarID) {
 		return
 	}
 
-	if authKey.Constraints != nil && len(authKey.Constraints.CalendarAllowlist) > 0 {
-		if !calendarAllowed(calendarID, authKey.Constraints.CalendarAllowlist) {
-			response.WriteConstraintViolation(w, "calendar_allowlist", "calendar not in allowlist")
-			return
-		}
-	}
-
-	ctx := r.Context()
-	event, err := h.calendarClient.GetEvent(ctx, calendarID, eventID)
+	event, err := h.calendarClient.GetEvent(r.Context(), calendarID, eventID)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get event", err)
+		response.WriteUpstreamError(w, "Failed to get event", err)
 		return
 	}
-
 	if event == nil {
-		response.Error(w, http.StatusNotFound, "event not found", nil)
+		response.WriteError(w, http.StatusNotFound, response.CodeRequestNotFound, "Event not found")
 		return
 	}
 
 	response.JSON(w, http.StatusOK, event)
 }
 
-// FreeBusyRequest represents a free/busy query.
+// FreeBusyRequest is a free/busy query body.
 type FreeBusyRequest struct {
-	TimeMin    time.Time `json:"timeMin"`
-	TimeMax    time.Time `json:"timeMax"`
-	Calendars  []string  `json:"calendars"`
-	TimeMinAlt time.Time `json:"time_min"`
-	TimeMaxAlt time.Time `json:"time_max"`
+	TimeMin   time.Time `json:"timeMin"`
+	TimeMax   time.Time `json:"timeMax"`
+	Calendars []string  `json:"calendars"`
 }
 
-// FreeBusy returns free/busy information.
+// FreeBusy reports busy intervals across calendars.
 func (h *Handler) FreeBusy(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
-	var req FreeBusyRequest
-	if err := parseJSON(r, &req); err != nil {
-		// Try query parameters as fallback
-		var parseErr error
-		req.TimeMin, parseErr = time.Parse(time.RFC3339, r.URL.Query().Get("timeMin"))
-		if parseErr != nil {
-			req.TimeMin = time.Now()
-		}
-		req.TimeMax, parseErr = time.Parse(time.RFC3339, r.URL.Query().Get("timeMax"))
-		if parseErr != nil {
-			req.TimeMax = req.TimeMin.AddDate(0, 0, 7) // Default 1 week
-		}
-		if cals := r.URL.Query().Get("calendars"); cals != "" {
-			req.Calendars = []string{cals}
-		}
-	}
-
-	if len(req.Calendars) == 0 {
-		req.Calendars = []string{"primary"}
-	}
-	if req.TimeMin.IsZero() && !req.TimeMinAlt.IsZero() {
-		req.TimeMin = req.TimeMinAlt
-	}
-	if req.TimeMax.IsZero() && !req.TimeMaxAlt.IsZero() {
-		req.TimeMax = req.TimeMaxAlt
+	req, err := parseFreeBusyRequest(w, r)
+	if err != nil {
+		response.WriteValidationError(w, err.Error())
+		return
 	}
 
 	if authKey.Constraints != nil && len(authKey.Constraints.CalendarAllowlist) > 0 {
-		var filtered []string
+		allowed := make([]string, 0, len(req.Calendars))
 		for _, cal := range req.Calendars {
-			if calendarAllowed(cal, authKey.Constraints.CalendarAllowlist) {
-				filtered = append(filtered, cal)
+			if apikeys.CalendarAllowed(cal, authKey.Constraints.CalendarAllowlist) {
+				allowed = append(allowed, cal)
 			}
 		}
-		if len(filtered) == 0 {
-			response.WriteConstraintViolation(w, "calendar_allowlist", "no calendars allowed for this key")
+		if len(allowed) == 0 {
+			response.WriteConstraintViolation(w, "calendar_allowlist", "No requested calendar is allowed for this API key")
 			return
 		}
-		req.Calendars = filtered
+		req.Calendars = allowed
 	}
 
-	ctx := r.Context()
-	// Build FreeBusy request
-	fbReq := &google.FreeBusyRequest{
-		TimeMin: req.TimeMin,
-		TimeMax: req.TimeMax,
-	}
+	fbReq := &google.FreeBusyRequest{TimeMin: req.TimeMin, TimeMax: req.TimeMax}
 	for _, cal := range req.Calendars {
 		fbReq.Items = append(fbReq.Items, google.FreeBusyCalendar{ID: cal})
 	}
-	result, err := h.calendarClient.FreeBusy(ctx, fbReq)
+
+	result, err := h.calendarClient.FreeBusy(r.Context(), fbReq)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get free/busy", err)
+		response.WriteUpstreamError(w, "Failed to query free/busy", err)
 		return
 	}
 
 	response.JSON(w, http.StatusOK, result)
 }
 
-// CreateEvent initiates a create event request (requires approval).
+// parseFreeBusyRequest accepts the query either as a JSON body or as query
+// parameters, since this endpoint is reachable by both GET and POST.
+func parseFreeBusyRequest(w http.ResponseWriter, r *http.Request) (*FreeBusyRequest, error) {
+	req := &FreeBusyRequest{}
+
+	if r.Method == http.MethodPost && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, req); err != nil {
+			return nil, errors.New("invalid request body: " + err.Error())
+		}
+	} else {
+		query := r.URL.Query()
+		if raw := query.Get("timeMin"); raw != "" {
+			parsed, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return nil, errors.New("invalid timeMin (expected RFC3339)")
+			}
+			req.TimeMin = parsed
+		}
+		if raw := query.Get("timeMax"); raw != "" {
+			parsed, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return nil, errors.New("invalid timeMax (expected RFC3339)")
+			}
+			req.TimeMax = parsed
+		}
+		if raw := query.Get("calendars"); raw != "" {
+			req.Calendars = splitAndTrim(raw)
+		}
+	}
+
+	if req.TimeMin.IsZero() {
+		req.TimeMin = time.Now()
+	}
+	if req.TimeMax.IsZero() {
+		req.TimeMax = req.TimeMin.AddDate(0, 0, 7)
+	}
+	if !req.TimeMax.After(req.TimeMin) {
+		return nil, errors.New("timeMax must be after timeMin")
+	}
+	if len(req.Calendars) == 0 {
+		req.Calendars = []string{"primary"}
+	}
+
+	for _, cal := range req.Calendars {
+		if err := util.ValidateCalendarID(cal); err != nil {
+			return nil, errors.New("invalid calendar ID: " + cal)
+		}
+	}
+
+	return req, nil
+}
+
+// CreateEvent submits an event creation for approval.
 func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "write")
+	authKey := requireTier(w, r, database.TierWrite)
 	if authKey == nil {
 		return
 	}
 
 	var intent google.EventIntent
-	if err := parseJSON(r, &intent); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body", err)
+	if err := decodeJSON(w, r, &intent); err != nil {
+		response.WriteValidationError(w, "invalid request body: "+err.Error())
 		return
 	}
 
-	// Validate intent
-	if err := intent.Validate(); err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error(), nil)
-		return
-	}
 	intent.Sanitize()
-
-	approvalRequired, err := h.evaluateConstraintsForCreate(authKey, &intent)
-	if err != nil {
-		writeConstraintError(w, err)
+	if err := intent.Validate(); err != nil {
+		response.WriteValidationError(w, err.Error())
 		return
 	}
 
-	// Get idempotency key
-	idempotencyKey := r.Header.Get("Idempotency-Key")
-
-	// Marshal payload
-	payload, _ := json.Marshal(intent)
-
-	// Submit request
-	ctx := r.Context()
-	req, err := h.engine.SubmitRequest(ctx, authKey, database.OperationCreateEvent, payload, idempotencyKey, approvalRequired, "policy")
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to submit request", err)
-		return
-	}
-
-	statusCode := http.StatusAccepted
-	if !approvalRequired {
-		statusCode = http.StatusOK
-	}
-	response.JSON(w, statusCode, map[string]interface{}{
-		"request_id": req.ID,
-		"status":     req.Status,
-		"expires_at": req.ExpiresAt,
-		"message":    "Event creation request submitted",
+	approvalRequired, ok := h.evaluate(w, authKey, apikeys.Operation{
+		Name:       database.OperationCreateEvent,
+		CalendarID: intent.CalendarID,
+		Attendees:  intent.Attendees,
+		Start:      intent.Start,
+		End:        intent.End,
+		TimesKnown: true,
 	})
+	if !ok {
+		return
+	}
+
+	h.submit(w, r, authKey, database.OperationCreateEvent, intent, approvalRequired)
 }
 
-// UpdateEvent initiates an update event request (requires approval).
+// UpdateEvent submits an event update for approval.
 func (h *Handler) UpdateEvent(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "write")
+	authKey := requireTier(w, r, database.TierWrite)
 	if authKey == nil {
 		return
 	}
 
 	var intent google.EventUpdateIntent
-	if err := parseJSON(r, &intent); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body", err)
+	if err := decodeJSON(w, r, &intent); err != nil {
+		response.WriteValidationError(w, "invalid request body: "+err.Error())
 		return
 	}
 
-	// Validate intent
+	intent.Sanitize()
 	if err := intent.Validate(); err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error(), nil)
+		response.WriteValidationError(w, err.Error())
 		return
 	}
 	if !intent.HasChanges() {
-		response.Error(w, http.StatusBadRequest, "no changes provided", nil)
-		return
-	}
-	sanitizeUpdateIntent(&intent)
-
-	approvalRequired, err := h.evaluateConstraintsForUpdate(r.Context(), authKey, &intent)
-	if err != nil {
-		writeConstraintError(w, err)
+		response.WriteValidationError(w, "no changes provided")
 		return
 	}
 
-	// Get idempotency key
-	idempotencyKey := r.Header.Get("Idempotency-Key")
-
-	// Marshal payload
-	payload, _ := json.Marshal(intent)
-
-	// Submit request
-	ctx := r.Context()
-	req, err := h.engine.SubmitRequest(ctx, authKey, database.OperationUpdateEvent, payload, idempotencyKey, approvalRequired, "policy")
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to submit request", err)
+	op := h.updateOperation(r.Context(), authKey, &intent)
+	approvalRequired, ok := h.evaluate(w, authKey, op)
+	if !ok {
 		return
 	}
 
-	statusCode := http.StatusAccepted
-	if !approvalRequired {
-		statusCode = http.StatusOK
-	}
-	response.JSON(w, statusCode, map[string]interface{}{
-		"request_id": req.ID,
-		"status":     req.Status,
-		"expires_at": req.ExpiresAt,
-		"message":    "Event update request submitted",
-	})
+	h.submit(w, r, authKey, database.OperationUpdateEvent, intent, approvalRequired)
 }
 
-// DeleteEvent initiates a delete event request (requires approval).
+// DeleteEvent submits an event deletion for approval.
 func (h *Handler) DeleteEvent(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "write")
+	authKey := requireTier(w, r, database.TierWrite)
 	if authKey == nil {
 		return
 	}
 
 	var intent google.EventDeleteIntent
-	if err := parseJSON(r, &intent); err != nil {
-		response.Error(w, http.StatusBadRequest, "invalid request body", err)
+	if err := decodeJSON(w, r, &intent); err != nil {
+		response.WriteValidationError(w, "invalid request body: "+err.Error())
 		return
 	}
-
-	// Validate intent
 	if err := intent.Validate(); err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error(), nil)
+		response.WriteValidationError(w, err.Error())
 		return
 	}
 
-	approvalRequired, err := h.evaluateConstraintsForDelete(authKey, &intent)
+	approvalRequired, ok := h.evaluate(w, authKey, apikeys.Operation{
+		Name:       database.OperationDeleteEvent,
+		CalendarID: intent.CalendarID,
+	})
+	if !ok {
+		return
+	}
+
+	h.submit(w, r, authKey, database.OperationDeleteEvent, intent, approvalRequired)
+}
+
+// submit stores the request and renders the response.
+func (h *Handler) submit(
+	w http.ResponseWriter,
+	r *http.Request,
+	authKey *apikeys.AuthenticatedKey,
+	operation string,
+	intent any,
+	approvalRequired bool,
+) {
+	payload, err := json.Marshal(intent)
 	if err != nil {
-		writeConstraintError(w, err)
+		response.WriteInternalError(w, "Failed to record the request", err)
 		return
 	}
 
-	// Get idempotency key
-	idempotencyKey := r.Header.Get("Idempotency-Key")
-
-	// Marshal payload
-	payload, _ := json.Marshal(intent)
-
-	// Submit request
-	ctx := r.Context()
-	req, err := h.engine.SubmitRequest(ctx, authKey, database.OperationDeleteEvent, payload, idempotencyKey, approvalRequired, "policy")
+	req, err := h.engine.SubmitRequest(r.Context(), authKey, operation, payload,
+		r.Header.Get("Idempotency-Key"), approvalRequired, "policy")
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to submit request", err)
+		response.WriteInternalError(w, "Failed to submit the request", err)
 		return
 	}
 
-	statusCode := http.StatusAccepted
+	status := http.StatusAccepted
+	message := "Request submitted for approval"
 	if !approvalRequired {
-		statusCode = http.StatusOK
+		status = http.StatusOK
+		message = "Request executed without approval, as permitted by this key's policy"
 	}
-	response.JSON(w, statusCode, map[string]interface{}{
+
+	response.JSON(w, status, map[string]any{
 		"request_id": req.ID,
 		"status":     req.Status,
 		"expires_at": req.ExpiresAt,
-		"message":    "Event deletion request submitted",
+		"message":    message,
 	})
 }
 
-// Helpers
-
-func (h *Handler) evaluateConstraintsForCreate(authKey *apikeys.AuthenticatedKey, intent *google.EventIntent) (bool, error) {
-	result, violation := apikeys.EvaluateConstraints(
-		authKey,
-		database.OperationCreateEvent,
-		intent.CalendarID,
-		intent.Attendees,
-		intent.Start,
-		intent.End,
-	)
-	return handleConstraintResult(result, violation)
-}
-
-func (h *Handler) evaluateConstraintsForUpdate(ctx context.Context, authKey *apikeys.AuthenticatedKey, intent *google.EventUpdateIntent) (bool, error) {
-	// If no constraints, rely on tier defaults only.
-	if authKey.Constraints == nil {
-		result, violation := apikeys.EvaluateConstraints(
-			authKey,
-			database.OperationUpdateEvent,
-			intent.CalendarID,
-			intent.Attendees,
-			time.Now(),
-			time.Now(),
-		)
-		return handleConstraintResult(result, violation)
+// updateOperation resolves the effective times and attendees of an update by
+// merging the requested changes over the existing event.
+//
+// When the existing event cannot be read, the operation is reported with
+// unknown times so policy evaluation falls back to requiring approval rather
+// than assuming the constraints are satisfied.
+func (h *Handler) updateOperation(ctx context.Context, authKey *apikeys.AuthenticatedKey, intent *google.EventUpdateIntent) apikeys.Operation {
+	op := apikeys.Operation{
+		Name:       database.OperationUpdateEvent,
+		CalendarID: intent.CalendarID,
+		Attendees:  intent.Attendees,
 	}
 
-	// Fetch existing event to compute effective values
+	// Reading the existing event only matters when a constraint depends on it.
+	if authKey.Constraints == nil {
+		op.TimesKnown = intent.Start != nil && intent.End != nil
+		if op.TimesKnown {
+			op.Start, op.End = *intent.Start, *intent.End
+		}
+		return op
+	}
+
 	existing, err := h.calendarClient.GetEvent(ctx, intent.CalendarID, intent.EventID)
 	if err != nil || existing == nil {
-		// Fail closed: require approval if we cannot evaluate safely
-		return true, nil
+		util.Debug("Could not read the event being updated; requiring approval",
+			"event_id", intent.EventID, "error", err)
+		return op
 	}
 
-	start := extractEventTime(existing.Start)
-	end := extractEventTime(existing.End)
-	attendees := extractAttendees(existing.Attendees)
+	op.Start = existing.Start.Time()
+	op.End = existing.End.Time()
+	op.AllDay = existing.Start.IsAllDay()
 
 	if intent.Start != nil {
-		start = *intent.Start
+		op.Start = *intent.Start
+		op.AllDay = false
 	}
 	if intent.End != nil {
-		end = *intent.End
+		op.End = *intent.End
 	}
-	if len(intent.Attendees) > 0 {
-		attendees = intent.Attendees
+	if len(intent.Attendees) == 0 {
+		op.Attendees = attendeeEmails(existing.Attendees)
 	}
+	op.TimesKnown = !op.Start.IsZero() && !op.End.IsZero()
 
-	if !start.IsZero() && !end.IsZero() {
-		if err := util.ValidateTimeRange(start, end, false); err != nil {
-			return false, err
-		}
-	}
-
-	result, violation := apikeys.EvaluateConstraints(
-		authKey,
-		database.OperationUpdateEvent,
-		intent.CalendarID,
-		attendees,
-		start,
-		end,
-	)
-	return handleConstraintResult(result, violation)
+	return op
 }
 
-func (h *Handler) evaluateConstraintsForDelete(authKey *apikeys.AuthenticatedKey, intent *google.EventDeleteIntent) (bool, error) {
-	now := time.Now()
-	result, violation := apikeys.EvaluateConstraints(
-		authKey,
-		database.OperationDeleteEvent,
-		intent.CalendarID,
-		nil,
-		now,
-		now,
-	)
-	return handleConstraintResult(result, violation)
-}
+// evaluate applies the key's policy, writing the rejection response itself.
+// It returns whether approval is required and whether to continue.
+func (h *Handler) evaluate(w http.ResponseWriter, authKey *apikeys.AuthenticatedKey, op apikeys.Operation) (approvalRequired, ok bool) {
+	result, violation := apikeys.Evaluate(authKey, op)
 
-func handleConstraintResult(result apikeys.ConstraintResult, violation *apikeys.ConstraintViolation) (bool, error) {
 	switch result {
 	case apikeys.ConstraintDeny:
 		if violation != nil {
-			return false, violation
+			response.WriteConstraintViolation(w, violation.Constraint, violation.Message)
+		} else {
+			response.WriteForbidden(w, "Operation denied by policy")
 		}
-		return false, fmt.Errorf("operation denied by policy")
+		return false, false
 	case apikeys.ConstraintRequireApproval:
-		return true, nil
+		return true, true
 	default:
-		return false, nil
+		return false, true
 	}
 }
 
-func writeConstraintError(w http.ResponseWriter, err error) {
-	if errors.Is(err, util.ErrPastTime) || errors.Is(err, util.ErrEndBeforeStart) {
-		response.Error(w, http.StatusBadRequest, err.Error(), nil)
-		return
+// calendarPermitted enforces the calendar allowlist for read operations.
+func (h *Handler) calendarPermitted(w http.ResponseWriter, authKey *apikeys.AuthenticatedKey, calendarID string) bool {
+	if calendarID == "" {
+		response.WriteValidationError(w, "calendarId is required")
+		return false
 	}
-	if violation, ok := err.(*apikeys.ConstraintViolation); ok {
-		response.WriteConstraintViolation(w, violation.Constraint, violation.Message)
-		return
+	if err := util.ValidateCalendarID(calendarID); err != nil {
+		response.WriteValidationError(w, err.Error())
+		return false
 	}
-	response.Error(w, http.StatusForbidden, err.Error(), nil)
+	if authKey.Constraints != nil && len(authKey.Constraints.CalendarAllowlist) > 0 &&
+		!apikeys.CalendarAllowed(calendarID, authKey.Constraints.CalendarAllowlist) {
+		response.WriteConstraintViolation(w, "calendar_allowlist", "Calendar is not in the allowed list")
+		return false
+	}
+	return true
 }
 
-func calendarAllowed(calendarID string, allowlist []string) bool {
-	for _, allowed := range allowlist {
-		if allowed == "*" || allowed == calendarID {
-			return true
-		}
-	}
-	return false
-}
-
-func filterCalendars(calendars []google.Calendar, allowlist []string) []google.Calendar {
-	var filtered []google.Calendar
-	for _, cal := range calendars {
-		if calendarAllowed(cal.ID, allowlist) {
-			filtered = append(filtered, cal)
-		}
-	}
-	return filtered
-}
-
-func extractEventTime(eventTime *google.EventTime) time.Time {
-	if eventTime == nil {
-		return time.Time{}
-	}
-	if !eventTime.DateTime.IsZero() {
-		return eventTime.DateTime
-	}
-	if eventTime.Date != "" {
-		if t, err := time.Parse("2006-01-02", eventTime.Date); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
-}
-
-func extractAttendees(attendees []google.Attendee) []string {
+func attendeeEmails(attendees []google.Attendee) []string {
 	if len(attendees) == 0 {
 		return nil
 	}
-	result := make([]string, 0, len(attendees))
-	for _, attendee := range attendees {
-		if attendee.Email != "" {
-			result = append(result, attendee.Email)
+	emails := make([]string, 0, len(attendees))
+	for _, a := range attendees {
+		if a.Email != "" {
+			emails = append(emails, a.Email)
 		}
 	}
-	return result
+	return emails
 }
 
-func sanitizeUpdateIntent(intent *google.EventUpdateIntent) {
-	if intent.Summary != nil {
-		v := util.SanitizeString(*intent.Summary)
-		intent.Summary = &v
+func splitAndTrim(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
-	if intent.Description != nil {
-		v := util.SanitizeString(*intent.Description)
-		intent.Description = &v
-	}
-	if intent.Location != nil {
-		v := util.SanitizeString(*intent.Location)
-		intent.Location = &v
-	}
+	return out
 }

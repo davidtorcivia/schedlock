@@ -1,4 +1,4 @@
-// Package crypto provides API key hashing using HMAC-SHA256.
+// Package crypto provides API key generation and HMAC-SHA256 hashing.
 package crypto
 
 import (
@@ -11,110 +11,119 @@ import (
 	"strings"
 )
 
-// Base62 alphabet for API key generation
-const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+// base62Alphabet is used for the human-copyable portion of API keys and IDs.
+const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// APIKeyHasher handles API key generation and HMAC-SHA256 hashing.
+// minSecretBytes is the smallest server secret accepted for key hashing.
+const minSecretBytes = 16
+
+// APIKeyHasher generates API keys and hashes them for storage.
 type APIKeyHasher struct {
 	serverSecret []byte
 }
 
-// NewAPIKeyHasher creates a new hasher with the given server secret.
+// NewAPIKeyHasher creates a hasher from a base64-encoded or raw server secret.
 func NewAPIKeyHasher(secret string) (*APIKeyHasher, error) {
-	// Decode or use raw secret
 	secretBytes, err := base64.StdEncoding.DecodeString(secret)
 	if err != nil {
-		// Use raw string if not valid base64
+		// Not base64: use the raw bytes.
 		secretBytes = []byte(secret)
 	}
 
-	if len(secretBytes) < 16 {
-		return nil, fmt.Errorf("server secret must be at least 16 bytes")
+	if len(secretBytes) < minSecretBytes {
+		return nil, fmt.Errorf("server secret must decode to at least %d bytes", minSecretBytes)
 	}
 
 	return &APIKeyHasher{serverSecret: secretBytes}, nil
 }
 
-// GenerateAPIKey creates a new API key with the specified tier.
-// Returns the full key (to show once) and the key ID.
-// Format: sk_{tier}_{22_base62_chars}
-func (h *APIKeyHasher) GenerateAPIKey(tier string) (fullKey string, err error) {
-	// Validate tier
-	if tier != "read" && tier != "write" && tier != "admin" {
+// GenerateAPIKey creates a new API key for the given tier.
+// Format: sk_{tier}_{22 base62 characters} (~130 bits of entropy).
+func (h *APIKeyHasher) GenerateAPIKey(tier string) (string, error) {
+	switch tier {
+	case "read", "write", "admin":
+	default:
 		return "", fmt.Errorf("invalid tier: %s (must be read, write, or admin)", tier)
 	}
 
-	// Generate 22 base62 characters (~131 bits of entropy)
-	randomPart, err := generateBase62(22)
+	randomPart, err := RandomBase62(22)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate random part: %w", err)
 	}
 
-	fullKey = fmt.Sprintf("sk_%s_%s", tier, randomPart)
-	return fullKey, nil
+	return fmt.Sprintf("sk_%s_%s", tier, randomPart), nil
 }
 
-// HashAPIKey computes HMAC-SHA256 hash of an API key.
-// Uses server secret as the HMAC key for additional security.
+// HashAPIKey computes the HMAC-SHA256 of an API key under the server secret.
+// Keying the hash means a stolen database cannot be attacked offline without
+// also stealing the server secret.
 func (h *APIKeyHasher) HashAPIKey(key string) string {
 	mac := hmac.New(sha256.New, h.serverSecret)
 	mac.Write([]byte(key))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyAPIKey checks if a key matches a stored hash.
+// VerifyAPIKey reports whether a key matches a stored hash.
 func (h *APIKeyHasher) VerifyAPIKey(key, storedHash string) bool {
-	computedHash := h.HashAPIKey(key)
-	return hmac.Equal([]byte(computedHash), []byte(storedHash))
+	return hmac.Equal([]byte(h.HashAPIKey(key)), []byte(storedHash))
 }
 
-// GetKeyPrefix extracts the displayable prefix from an API key.
-// Returns first 8 characters + last 2 characters with ellipsis.
-// Example: sk_write_7kX9mP4q...zA
+// GetKeyPrefix returns the non-secret display form of an API key, e.g.
+// "sk_write_7kX...zA". Enough to recognise a key, not enough to use it.
 func GetKeyPrefix(key string) string {
-	if len(key) < 12 {
+	if len(key) < 16 {
 		return key
 	}
 	return key[:12] + "..." + key[len(key)-2:]
 }
 
-// ParseAPIKeyTier extracts the tier from an API key.
-// Returns empty string if format is invalid.
+// ParseAPIKeyTier extracts the tier from an API key, or "" if malformed.
 func ParseAPIKeyTier(key string) string {
-	if !strings.HasPrefix(key, "sk_") {
-		return ""
-	}
-
 	parts := strings.Split(key, "_")
-	if len(parts) != 3 {
+	if len(parts) != 3 || parts[0] != "sk" {
 		return ""
 	}
 
-	tier := parts[1]
-	if tier != "read" && tier != "write" && tier != "admin" {
+	switch parts[1] {
+	case "read", "write", "admin":
+		return parts[1]
+	default:
 		return ""
 	}
-
-	return tier
 }
 
-// generateBase62 generates n random base62 characters.
-func generateBase62(n int) (string, error) {
-	bytes := make([]byte, n)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
+// RandomBase62 returns n cryptographically random base62 characters.
+//
+// Bytes whose value would wrap the alphabet are rejected rather than reduced
+// modulo 62; naive modulo makes the first four characters of the alphabet
+// measurably more likely and quietly costs entropy.
+func RandomBase62(n int) (string, error) {
+	const maxUnbiased = 256 - (256 % len(base62Alphabet)) // 248
 
-	result := make([]byte, n)
-	for i := 0; i < n; i++ {
-		result[i] = base62Chars[bytes[i]%62]
+	result := make([]byte, 0, n)
+	buf := make([]byte, n+n/4+8) // a little slack to cover rejected bytes
+
+	for len(result) < n {
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("failed to read random bytes: %w", err)
+		}
+		for _, b := range buf {
+			if int(b) >= maxUnbiased {
+				continue
+			}
+			result = append(result, base62Alphabet[int(b)%len(base62Alphabet)])
+			if len(result) == n {
+				break
+			}
+		}
 	}
 
 	return string(result), nil
 }
 
-// HashSHA256 computes a simple SHA-256 hash (for decision tokens).
+// HashSHA256 returns the hex-encoded SHA-256 of data. Used for decision tokens,
+// which are already high-entropy random values.
 func HashSHA256(data string) string {
-	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:])
+	sum := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(sum[:])
 }

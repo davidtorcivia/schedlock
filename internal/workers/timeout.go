@@ -1,4 +1,5 @@
-// Package workers provides background worker goroutines.
+// Package workers provides the background goroutines that maintain request
+// state and prune stored data.
 package workers
 
 import (
@@ -12,43 +13,42 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// TimeoutWorker handles expiration of pending requests.
+// TimeoutWorker resolves requests whose approval window has elapsed.
 type TimeoutWorker struct {
 	requestRepo *requests.Repository
-	db          *database.DB
 	engine      *engine.Engine
-	interval    time.Duration
+	auditLogger *engine.AuditLogger
 	config      *config.ApprovalConfig
-	webhookChan chan<- string // Channel to notify webhook client of expirations
+	interval    time.Duration
 }
 
-// NewTimeoutWorker creates a new timeout worker.
-func NewTimeoutWorker(requestRepo *requests.Repository, db *database.DB, engine *engine.Engine, cfg *config.ApprovalConfig, interval time.Duration) *TimeoutWorker {
+// NewTimeoutWorker creates a timeout worker polling at the given interval.
+func NewTimeoutWorker(
+	requestRepo *requests.Repository,
+	eng *engine.Engine,
+	auditLogger *engine.AuditLogger,
+	cfg *config.ApprovalConfig,
+	interval time.Duration,
+) *TimeoutWorker {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
 	return &TimeoutWorker{
 		requestRepo: requestRepo,
-		db:          db,
-		engine:      engine,
-		interval:    interval,
+		engine:      eng,
+		auditLogger: auditLogger,
 		config:      cfg,
+		interval:    interval,
 	}
 }
 
-// SetWebhookChannel sets the channel for webhook notifications.
-func (w *TimeoutWorker) SetWebhookChannel(ch chan<- string) {
-	w.webhookChan = ch
-}
-
-// Start starts the timeout worker.
+// Start runs the worker until the context is cancelled.
 func (w *TimeoutWorker) Start(ctx context.Context) {
 	util.Info("Starting timeout worker", "interval", w.interval)
 
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
-	// Run immediately on start
 	w.processExpired(ctx)
 
 	for {
@@ -62,15 +62,14 @@ func (w *TimeoutWorker) Start(ctx context.Context) {
 	}
 }
 
-// processExpired finds and marks expired requests.
+// processExpired applies the configured default action to every request whose
+// approval deadline has passed.
 func (w *TimeoutWorker) processExpired(ctx context.Context) {
-	// Find expired pending requests
 	expired, err := w.requestRepo.GetExpired(ctx)
 	if err != nil {
 		util.Error("Failed to get expired requests", "error", err)
 		return
 	}
-
 	if len(expired) == 0 {
 		return
 	}
@@ -78,48 +77,52 @@ func (w *TimeoutWorker) processExpired(ctx context.Context) {
 	util.Info("Processing expired requests", "count", len(expired))
 
 	for _, req := range expired {
-		defaultAction := "deny"
-		if w.config != nil && w.config.DefaultAction != "" {
-			defaultAction = w.config.DefaultAction
+		if ctx.Err() != nil {
+			return
 		}
-		if defaultAction == "approve" && w.engine != nil {
-			if err := w.engine.ProcessApproval(ctx, req.ID, "approve", "timeout"); err != nil {
-				util.Error("Failed to auto-approve expired request", "error", err, "request_id", req.ID)
-				continue
-			}
-			util.Info("Request auto-approved on timeout", "request_id", req.ID)
-			continue
-		}
-
-		updated, err := w.requestRepo.UpdateStatus(ctx, req.ID, database.StatusExpired, "timeout")
-		if err != nil {
-			util.Error("Failed to expire request", "error", err, "request_id", req.ID)
-			continue
-		}
-
-		if !updated {
-			continue
-		}
-
-		// Log to audit
-		w.logAudit(ctx, req.ID, req.APIKeyID, database.AuditRequestExpired)
-
-		if w.engine != nil {
-			w.engine.NotifyWebhookStatus(ctx, req.ID, database.StatusExpired)
-		}
-
-		util.Info("Request expired", "request_id", req.ID)
+		w.resolve(ctx, req)
 	}
 }
 
-// logAudit logs an expiration event to the audit log.
-func (w *TimeoutWorker) logAudit(ctx context.Context, requestID, apiKeyID, eventType string) {
-	_, err := w.db.ExecContext(ctx, `
-		INSERT INTO audit_log (event_type, request_id, api_key_id, actor, details)
-		VALUES (?, ?, ?, ?, NULL)
-	`, eventType, requestID, apiKeyID, "timeout_worker")
-
-	if err != nil {
-		util.Error("Failed to log expiration audit", "error", err)
+func (w *TimeoutWorker) resolve(ctx context.Context, req database.Request) {
+	// Anything other than an explicit "approve" default fails closed: an
+	// unanswered request is denied rather than executed.
+	if w.defaultAction() == "approve" && w.engine != nil {
+		if err := w.engine.ProcessApproval(ctx, req.ID, "approve", "timeout"); err != nil {
+			util.Error("Failed to auto-approve expired request", "error", err, "request_id", req.ID)
+			return
+		}
+		util.Info("Request auto-approved on timeout", "request_id", req.ID)
+		return
 	}
+
+	updated, err := w.requestRepo.UpdateStatus(ctx, req.ID, database.StatusExpired, "timeout")
+	if err != nil {
+		util.Error("Failed to expire request", "error", err, "request_id", req.ID)
+		return
+	}
+	if !updated {
+		// Someone decided the request between the query and this update.
+		return
+	}
+
+	w.auditLogger.Log(ctx, engine.Entry{
+		EventType: database.AuditRequestExpired,
+		RequestID: req.ID,
+		APIKeyID:  req.APIKeyID,
+		Actor:     "timeout_worker",
+	})
+
+	if w.engine != nil {
+		w.engine.NotifyWebhookStatus(ctx, req.ID, database.StatusExpired)
+	}
+
+	util.Info("Request expired", "request_id", req.ID)
+}
+
+func (w *TimeoutWorker) defaultAction() string {
+	if w.config == nil || w.config.DefaultAction == "" {
+		return "deny"
+	}
+	return w.config.DefaultAction
 }

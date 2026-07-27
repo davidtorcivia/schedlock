@@ -1,12 +1,14 @@
-// Package main is the entry point for the SchedLock Calendar Proxy server.
+// Command schedlock runs the SchedLock calendar approval proxy.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,22 +21,17 @@ import (
 	"github.com/dtorcivia/schedlock/internal/web"
 )
 
+// shutdownTimeout bounds graceful shutdown: in-flight requests and queued
+// calendar operations get this long to finish.
+const shutdownTimeout = 30 * time.Second
+
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "hash-password":
-			if len(os.Args) < 3 {
-				fmt.Fprintln(os.Stderr, "Usage: schedlock hash-password \"YourPassword\"")
-				os.Exit(1)
-			}
-			hash, err := schedcrypto.HashPassword(os.Args[2])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error hashing password: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println(hash)
-			return
+		if err := runCommand(os.Args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
+		return
 	}
 
 	if err := run(); err != nil {
@@ -43,173 +40,215 @@ func main() {
 	}
 }
 
+// runCommand handles the command-line subcommands.
+func runCommand(args []string) error {
+	switch args[0] {
+	case "hash-password":
+		if len(args) < 2 {
+			return errors.New(`usage: schedlock hash-password "your password"`)
+		}
+		hash, err := schedcrypto.HashPassword(args[1])
+		if err != nil {
+			return fmt.Errorf("failed to hash the password: %w", err)
+		}
+		fmt.Println(hash)
+		return nil
+
+	case "version":
+		fmt.Println(server.Version)
+		return nil
+
+	case "help", "-h", "--help":
+		printUsage()
+		return nil
+
+	default:
+		printUsage()
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func printUsage() {
+	fmt.Print(`SchedLock - human approval for AI calendar changes
+
+Usage:
+  schedlock                            Run the server
+  schedlock hash-password "password"   Print an Argon2id hash for the admin password
+  schedlock version                    Print the version
+  schedlock help                       Show this message
+
+Configuration is read from the config file (default /data/config.yaml) and the
+environment. See .env.example for the available settings.
+`)
+}
+
 func run() error {
-	// Load configuration with setup mode support
-	cfg, isSetupMode, err := config.LoadWithSetupMode()
+	cfg, needsSetup, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Initialize logger
-	logger := util.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
-	util.SetDefaultLogger(logger)
+	util.SetDefaultLogger(util.NewLogger(cfg.Logging.Level, cfg.Logging.Format))
 
-	// If first run, start setup server instead
-	if isSetupMode {
-		logger.Info("Starting SchedLock in SETUP MODE",
-			"port", cfg.Server.Port,
-		)
-		return runSetupServer(cfg)
+	if needsSetup {
+		util.Info("Starting in setup mode", "port", cfg.Server.Port)
+		return runSetup(cfg)
 	}
 
-	logger.Info("Starting SchedLock Calendar Proxy",
-		"version", "1.0.0",
-		"port", cfg.Server.Port,
-	)
+	for _, warning := range cfg.Warnings() {
+		util.Warn(warning)
+	}
 
-	// Open database
 	db, err := database.Open(cfg.Database.Path)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return fmt.Errorf("failed to open the database: %w", err)
 	}
 	defer db.Close()
 
-	logger.Info("Database initialized",
-		"path", cfg.Database.Path,
-	)
+	util.Info("Database ready", "path", cfg.Database.Path)
 
-	// Load runtime settings (database overrides)
-	settingsStore := settings.NewStore(db)
-	runtimeSettings, err := settingsStore.Load(context.Background())
-	if err != nil {
-		logger.Warn("Failed to load runtime settings", "error", err)
-	} else if runtimeSettings != nil {
-		if err := runtimeSettings.ApplyTo(cfg); err != nil {
-			logger.Warn("Failed to apply runtime settings", "error", err)
-		} else {
-			logger = util.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
-			util.SetDefaultLogger(logger)
-			logger.Info("Runtime settings applied")
-		}
+	// Runtime settings are applied over the file and environment configuration.
+	if err := applyRuntimeSettings(cfg, db); err != nil {
+		util.Warn("Could not apply stored settings", "error", err)
 	}
 
-	// Create and configure server
 	srv, err := server.New(cfg, db)
 	if err != nil {
-		return fmt.Errorf("failed to create server: %w", err)
+		return fmt.Errorf("failed to create the server: %w", err)
 	}
 
-	// Start server in background
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
 		Handler:      srv.Handler(),
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+		// A slow client must not be able to hold a connection open indefinitely
+		// while dribbling out request headers.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Channel for server errors
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+
+	srv.StartBackgroundWorkers(workerCtx)
+
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("HTTP server listening",
-			"addr", httpServer.Addr,
-			"base_url", cfg.Server.BaseURL,
-		)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		util.Info("HTTP server listening", "addr", httpServer.Addr, "base_url", cfg.Server.BaseURL)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
 
-	// Start background workers
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := srv.StartBackgroundWorkers(ctx); err != nil {
-		return fmt.Errorf("failed to start background workers: %w", err)
-	}
-
-	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-quit:
-		logger.Info("Received shutdown signal", "signal", sig.String())
+		util.Info("Shutting down", "signal", sig.String())
 	case err := <-serverErr:
 		return fmt.Errorf("server error: %w", err)
 	}
 
-	// Graceful shutdown
-	logger.Info("Shutting down gracefully...")
-	cancel() // Stop background workers
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
+	// Stop accepting requests first, then let queued calendar operations
+	// finish. Cancelling the workers before draining would abandon a request
+	// that had already been claimed for execution.
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Server shutdown error", "error", err)
+		util.Warn("HTTP server did not shut down cleanly", "error", err)
 	}
+	srv.Shutdown(shutdownCtx)
+	stopWorkers()
 
-	logger.Info("Server stopped")
+	util.Info("Server stopped")
 	return nil
 }
 
-// runSetupServer starts a minimal server for the first-run setup wizard.
-func runSetupServer(cfg *config.Config) error {
-	logger := util.GetDefaultLogger()
+// applyRuntimeSettings overlays the settings stored in the database.
+func applyRuntimeSettings(cfg *config.Config, db *database.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stored, err := settings.NewStore(db).Load(ctx)
+	if err != nil {
+		return err
+	}
+	if stored == nil {
+		return nil
+	}
+
+	if err := stored.ApplyTo(cfg); err != nil {
+		return err
+	}
+
+	util.SetDefaultLogger(util.NewLogger(cfg.Logging.Level, cfg.Logging.Format))
+	util.Info("Applied stored settings")
+	return nil
+}
+
+// runSetup serves the first-run wizard until setup completes.
+func runSetup(cfg *config.Config) error {
 	configPath := config.GetConfigFilePath()
 
-	setupHandler, err := web.NewSetupHandler(cfg, configPath)
+	// Completing setup writes the configuration and signals a restart: the
+	// application reads its configuration once at startup, so it must be
+	// re-executed to pick up the new file. Under Docker or systemd the
+	// supervisor restarts the process automatically.
+	restart := make(chan struct{})
+	var restartOnce sync.Once
+
+	setupHandler, err := web.NewSetupHandler(cfg, configPath, func() {
+		restartOnce.Do(func() {
+			// Give the browser a moment to receive the completion page.
+			time.Sleep(time.Second)
+			close(restart)
+		})
+	})
 	if err != nil {
-		return fmt.Errorf("failed to create setup handler: %w", err)
+		return fmt.Errorf("failed to create the setup handler: %w", err)
 	}
 
 	mux := http.NewServeMux()
-
-	// Static files
-	mux.Handle("GET /static/", http.StripPrefix("/static/",
-		http.FileServer(http.Dir("web/static"))))
-
 	setupHandler.RegisterRoutes(mux)
 
 	httpServer := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:           mux,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Channel for server errors
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("Setup server listening",
+		util.Info("Setup server listening",
 			"addr", httpServer.Addr,
-			"message", "Visit the server in your browser to complete setup",
-		)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			"message", "Open this address in a browser to finish setup")
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
 
-	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-quit:
-		logger.Info("Received shutdown signal", "signal", sig.String())
+		util.Info("Shutting down setup", "signal", sig.String())
 	case err := <-serverErr:
-		return fmt.Errorf("server error: %w", err)
+		return fmt.Errorf("setup server error: %w", err)
+	case <-restart:
+		util.Info("Setup complete; restarting to load the new configuration")
 	}
 
-	// Graceful shutdown
-	logger.Info("Shutting down setup server...")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Server shutdown error", "error", err)
+		util.Warn("Setup server did not shut down cleanly", "error", err)
 	}
 
-	logger.Info("Setup server stopped")
 	return nil
 }

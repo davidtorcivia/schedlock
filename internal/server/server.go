@@ -1,9 +1,11 @@
-// Package server provides the HTTP server and routing for SchedLock.
+// Package server wires the application together and serves HTTP.
 package server
 
 import (
 	"context"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/api"
@@ -28,35 +30,30 @@ import (
 	"github.com/dtorcivia/schedlock/internal/workers"
 )
 
-// Server is the main HTTP server for SchedLock.
+// Server owns every long-lived component and the HTTP router.
 type Server struct {
 	config          *config.Config
 	db              *database.DB
 	router          *http.ServeMux
-	apiKeyRepo      *apikeys.Repository
-	requestRepo     *requests.Repository
-	tokenRepo       *tokens.Repository
-	apiKeyHasher    *crypto.APIKeyHasher
-	encryptor       *crypto.Encryptor
 	rateLimiter     *middleware.RateLimiter
-	displayFormat   *util.DisplayFormatter
+	clientIP        *middleware.ClientIPResolver
+	usageRecorder   *apikeys.UsageRecorder
 	oauthMgr        *google.OAuthManager
-	calendarClient  *google.CalendarClient
 	engine          *engine.Engine
 	notificationMgr *notifications.Manager
 	webhookClient   *webhook.Client
-	auditLogger     *engine.AuditLogger
-	sessionMgr      *web.SessionManager
 	apiHandler      *api.Handler
 	webHandler      *web.Handler
 	timeoutWorker   *workers.TimeoutWorker
 	cleanupWorker   *workers.CleanupWorker
+	telegram        *telegram.Provider
 	telegramHandler *telegram.WebhookHandler
+
+	workers sync.WaitGroup
 }
 
-// New creates a new Server instance.
+// New builds a server from configuration and an open database.
 func New(cfg *config.Config, db *database.DB) (*Server, error) {
-	// Initialize crypto components
 	apiKeyHasher, err := crypto.NewAPIKeyHasher(cfg.Auth.SecretKey)
 	if err != nil {
 		return nil, err
@@ -67,221 +64,177 @@ func New(cfg *config.Config, db *database.DB) (*Server, error) {
 		return nil, err
 	}
 
-	// Initialize display formatter
 	displayFormat, err := util.NewDisplayFormatter(
-		cfg.Display.Timezone,
-		cfg.Display.DateFormat,
-		cfg.Display.TimeFormat,
-		cfg.Display.DatetimeFormat,
-	)
+		cfg.Display.Timezone, cfg.Display.DateFormat, cfg.Display.TimeFormat, cfg.Display.DatetimeFormat)
 	if err != nil {
 		return nil, err
 	}
 	util.SetDefaultFormatter(displayFormat)
 
-	// Initialize repositories
+	clientIP, invalidProxies := middleware.NewClientIPResolver(cfg.Server.TrustedProxies)
+	for _, entry := range invalidProxies {
+		util.Warn("Ignoring unparsable trusted proxy entry", "value", entry)
+	}
+
 	apiKeyRepo := apikeys.NewRepository(db, apiKeyHasher)
 	requestRepo := requests.NewRepository(db)
 	tokenRepo := tokens.NewRepository(db)
-
-	// Initialize rate limiter
-	rateLimiter := middleware.NewRateLimiter(cfg.RateLimits)
-
-	// Initialize OAuth manager
-	oauthMgr := google.NewOAuthManager(cfg, db, encryptor)
-
-	// Initialize Calendar client
-	calendarClient := google.NewCalendarClient(oauthMgr)
-
-	// Initialize audit logger
+	settingsStore := settings.NewStore(db)
 	auditLogger := engine.NewAuditLogger(db)
 
-	// Initialize engine
-	eng := engine.NewEngine(cfg, requestRepo, calendarClient, auditLogger, tokenRepo)
-
-	// Initialize notification credentials store
 	credentialsStore, err := notifications.NewCredentialsStore(db, cfg.Auth.EncryptionKey)
 	if err != nil {
 		return nil, err
 	}
 
-	// Wire credential store to OAuth manager for dynamic credential updates
+	oauthMgr := google.NewOAuthManager(cfg, db, encryptor)
 	oauthMgr.SetCredentialStore(credentialsStore)
+	calendarClient := google.NewCalendarClient(oauthMgr)
 
-	// Initialize notification manager
-	notificationMgr := notifications.NewManager(db, cfg)
+	eng := engine.NewEngine(cfg, requestRepo, calendarClient, auditLogger, tokenRepo)
 
-	// Register notification providers
-	if cfg.Notifications.Ntfy.Enabled {
-		notificationMgr.RegisterProvider(ntfy.NewProvider(&cfg.Notifications.Ntfy))
+	// The base URL is read through a closure because the operator can change it
+	// in settings, and notification links must use the current value.
+	notificationMgr := notifications.NewManager(db, credentialsStore, cfg.Notifications,
+		func() string { return cfg.Server.BaseURL })
+
+	telegramProvider := telegram.NewProvider()
+	notificationMgr.RegisterProvider(ntfy.NewProvider())
+	notificationMgr.RegisterProvider(pushover.NewProvider())
+	notificationMgr.RegisterProvider(telegramProvider)
+	notificationMgr.RegisterProvider(webhooknotify.NewProvider())
+
+	// Providers start from stored credentials, falling back to file and
+	// environment configuration.
+	if err := notificationMgr.Reload(context.Background()); err != nil {
+		util.Warn("Failed to load notification credentials", "error", err)
 	}
-	if cfg.Notifications.Pushover.Enabled {
-		notificationMgr.RegisterProvider(pushover.NewProvider(&cfg.Notifications.Pushover))
-	}
 
-	var telegramProvider *telegram.Provider
-	if cfg.Notifications.Telegram.Enabled {
-		telegramProvider = telegram.NewProvider(&cfg.Notifications.Telegram)
-		notificationMgr.RegisterProvider(telegramProvider)
-	}
-	// Always register webhook provider (enabled state checked dynamically via credentials store)
-	notificationMgr.RegisterProvider(webhooknotify.NewProvider(&cfg.Notifications.Webhook))
-
-	// Set notification manager on engine
 	eng.SetNotifier(notificationMgr)
 
-	// Initialize webhook client
 	webhookClient := webhook.NewClient(&cfg.Moltbot, db)
 	eng.SetWebhookClient(webhookClient)
 
-	// Initialize session manager
 	sessionMgr := web.NewSessionManager(db, &cfg.Auth)
+	usageRecorder := apikeys.NewUsageRecorder(apiKeyRepo, 30*time.Second)
 
-	// Initialize settings store
-	settingsStore := settings.NewStore(db)
+	apiHandler := api.NewHandler(cfg, eng, requestRepo, apiKeyRepo, tokenRepo,
+		calendarClient, notificationMgr, auditLogger)
 
-	// Initialize API handler
-	apiHandler := api.NewHandler(
-		cfg,
-		eng,
-		requestRepo,
-		apiKeyRepo,
-		tokenRepo,
-		calendarClient,
-		notificationMgr,
-		auditLogger,
-	)
-
-	// Initialize web handler
-	webHandler, err := web.NewHandler(
-		cfg,
-		sessionMgr,
-		requestRepo,
-		apiKeyRepo,
-		tokenRepo,
-		settingsStore,
-		credentialsStore,
-		eng,
-		oauthMgr,
-		notificationMgr,
-		auditLogger,
-	)
+	webHandler, err := web.NewHandler(web.Dependencies{
+		Config:           cfg,
+		SessionManager:   sessionMgr,
+		RequestRepo:      requestRepo,
+		APIKeyRepo:       apiKeyRepo,
+		TokenRepo:        tokenRepo,
+		SettingsStore:    settingsStore,
+		CredentialsStore: credentialsStore,
+		Engine:           eng,
+		OAuthManager:     oauthMgr,
+		CalendarClient:   calendarClient,
+		NotificationMgr:  notificationMgr,
+		AuditLogger:      auditLogger,
+		ClientIP:         clientIP.ClientIP,
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	// Initialize workers
-	timeoutWorker := workers.NewTimeoutWorker(requestRepo, db, eng, &cfg.Approval, 30*time.Second)
-	cleanupWorker := workers.NewCleanupWorker(db, &cfg.Retention)
 
 	s := &Server{
 		config:          cfg,
 		db:              db,
 		router:          http.NewServeMux(),
-		apiKeyRepo:      apiKeyRepo,
-		requestRepo:     requestRepo,
-		tokenRepo:       tokenRepo,
-		apiKeyHasher:    apiKeyHasher,
-		encryptor:       encryptor,
-		rateLimiter:     rateLimiter,
-		displayFormat:   displayFormat,
+		rateLimiter:     middleware.NewRateLimiter(cfg.RateLimits),
+		clientIP:        clientIP,
+		usageRecorder:   usageRecorder,
 		oauthMgr:        oauthMgr,
-		calendarClient:  calendarClient,
 		engine:          eng,
 		notificationMgr: notificationMgr,
 		webhookClient:   webhookClient,
-		auditLogger:     auditLogger,
-		sessionMgr:      sessionMgr,
 		apiHandler:      apiHandler,
 		webHandler:      webHandler,
-		timeoutWorker:   timeoutWorker,
-		cleanupWorker:   cleanupWorker,
+		timeoutWorker:   workers.NewTimeoutWorker(requestRepo, eng, auditLogger, &cfg.Approval, 30*time.Second),
+		cleanupWorker:   workers.NewCleanupWorker(db, &cfg.Retention),
+		telegram:        telegramProvider,
+		telegramHandler: telegram.NewWebhookHandler(telegramProvider, apiHandler, notificationMgr),
 	}
 
-	// Initialize Telegram webhook handler if enabled
-	if telegramProvider != nil {
-		s.telegramHandler = telegram.NewWebhookHandler(telegramProvider, apiHandler, notificationMgr)
-	}
-
-	// Setup routes
 	s.setupRoutes()
-
 	return s, nil
 }
 
-// Handler returns the HTTP handler with all middleware applied.
+// Handler returns the fully wrapped HTTP handler.
 func (s *Server) Handler() http.Handler {
-	// Build middleware chain (applied in reverse order)
+	useTLS := strings.HasPrefix(s.config.Server.BaseURL, "https://")
+
+	// Middleware is applied outermost-last: recovery wraps everything, so a
+	// panic anywhere below still produces a response.
 	var handler http.Handler = s.router
-
-	// Recovery middleware (outermost - catches panics)
-	handler = middleware.Recovery(handler)
-
-	// Logging middleware
-	handler = middleware.Logging(handler)
-
-	// CORS middleware (if needed for external API access)
+	handler = middleware.SecurityHeaders(useTLS)(handler)
 	handler = middleware.CORS(handler)
-
-	// Security headers
-	handler = middleware.SecurityHeaders(handler)
-
+	handler = middleware.Logging(s.clientIP.ClientIP)(handler)
+	handler = middleware.Recovery(handler)
 	return handler
 }
 
-// StartBackgroundWorkers starts all background workers.
-func (s *Server) StartBackgroundWorkers(ctx context.Context) error {
-	// Start engine execution queue
+// StartBackgroundWorkers launches every background goroutine.
+func (s *Server) StartBackgroundWorkers(ctx context.Context) {
 	s.engine.Start(ctx)
 
-	// Start timeout worker
-	go s.timeoutWorker.Start(ctx)
+	s.goWorker(func() { s.timeoutWorker.Start(ctx) })
+	s.goWorker(func() { s.cleanupWorker.Start(ctx) })
+	s.goWorker(func() { s.webhookClient.StartRetryWorker(ctx) })
+	s.goWorker(func() { s.usageRecorder.Run(ctx) })
+	s.goWorker(func() { s.rateLimiter.StartCleanup(ctx, 10*time.Minute) })
 
-	// Start cleanup worker
-	go s.cleanupWorker.Start(ctx)
-
-	// Start webhook retry worker
-	go s.webhookClient.StartRetryWorker(ctx)
-
-	// Register Telegram webhook if enabled
-	if s.config.Notifications.Telegram.Enabled && s.config.Notifications.Telegram.BotToken != "" && s.config.Notifications.Telegram.AutoRegisterWebhook {
-		webhookURL := s.config.Server.BaseURL + s.config.Notifications.Telegram.WebhookPath
-		provider := s.notificationMgr.GetProviderByName("telegram")
-		if tgProvider, ok := provider.(*telegram.Provider); ok {
-			tgProvider.RegisterWebhookAsync(webhookURL)
-		}
-	}
+	s.registerTelegramWebhook(ctx)
 
 	util.Info("Background workers started")
-	return nil
 }
 
-// Stop gracefully stops the server.
-func (s *Server) Stop() {
-	s.engine.Stop()
+func (s *Server) goWorker(fn func()) {
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		fn()
+	}()
 }
 
-// DB returns the database connection.
-func (s *Server) DB() *database.DB {
-	return s.db
+// registerTelegramWebhook points Telegram at this server when configured.
+func (s *Server) registerTelegramWebhook(ctx context.Context) {
+	if !s.config.Notifications.Telegram.AutoRegisterWebhook || !s.telegram.Enabled() {
+		return
+	}
+	if s.telegram.WebhookSecret() == "" {
+		util.Warn("Not registering the Telegram webhook: no webhook secret is configured. " +
+			"Set one in Settings so incoming updates can be authenticated.")
+		return
+	}
+	if s.config.Server.BaseURL == "" {
+		util.Warn("Not registering the Telegram webhook: no public base URL is configured")
+		return
+	}
+
+	s.telegram.RegisterWebhookAsync(ctx, s.config.Server.BaseURL+s.config.Notifications.Telegram.WebhookPath)
 }
 
-// Config returns the server configuration.
-func (s *Server) Config() *config.Config {
-	return s.config
-}
+// Shutdown stops background work, draining in-flight executions first.
+//
+// Order matters: the execution queue is drained before the worker context is
+// cancelled, so a request that has been claimed for execution reaches a
+// terminal state instead of being left marked "executing" forever.
+func (s *Server) Shutdown(ctx context.Context) {
+	s.engine.Stop(ctx)
 
-// APIKeyRepo returns the API key repository.
-func (s *Server) APIKeyRepo() *apikeys.Repository {
-	return s.apiKeyRepo
-}
+	done := make(chan struct{})
+	go func() {
+		s.workers.Wait()
+		close(done)
+	}()
 
-// Encryptor returns the encryption handler.
-func (s *Server) Encryptor() *crypto.Encryptor {
-	return s.encryptor
-}
-
-// DisplayFormat returns the display formatter.
-func (s *Server) DisplayFormat() *util.DisplayFormatter {
-	return s.displayFormat
+	select {
+	case <-done:
+	case <-ctx.Done():
+		util.Warn("Background workers did not stop before the shutdown deadline")
+	}
 }

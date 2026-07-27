@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="max-w-2xl mx-auto">
+    <div class="page-header">
+        <h1>Connect Google Calendar</h1>
+        <p>Authorize SchedLock to access your Google Calendar</p>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error mb-6">
+        <strong>Error:</strong> {{.Error}}
+    </div>
+    {{end}}
+
+    <div class="card animate-fade-in-scale">
+        <div class="card-body">
+            <div class="steps">
+                <!-- Step 1 -->
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>Authorization</h3>
+                        <p>Open Google's authorization page and grant access to your calendar.</p>
+                        <a href="{{.AuthURL}}" class="btn btn-primary">
+                            Continue to Google
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px;">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>Sign In and Authorize</h3>
+                        <p>Sign in with your Google account and grant SchedLock permission to manage your calendar events.</p>
+                    </div>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>You are returned here automatically</h3>
+                        <p>Google sends you back to SchedLock once you approve. Nothing else to do.</p>
+                        <p class="text-sm" style="color: var(--text-tertiary); margin-top: var(--space-2);">
+                            If the redirect fails, check that this exact URI is registered in Google Cloud Console:
+                        </p>
+                        <code style="display: block; background: var(--bg-secondary); padding: var(--space-3); border-radius: 6px; margin-top: var(--space-2); font-size: var(--text-sm); word-break: break-all; user-select: all;">{{.RedirectURI}}</code>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <div class="mt-6" style="text-align: center;">
+        <a href="/settings" class="btn btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 16px; height: 16px;">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+            Back to Settings
+        </a>
+    </div>
+</div>
+{{end}}

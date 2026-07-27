@@ -1,4 +1,5 @@
-// Package engine provides the core business logic for request processing.
+// Package engine provides the core request lifecycle: submission, approval,
+// and execution against Google Calendar.
 package engine
 
 import (
@@ -21,29 +22,40 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// Engine orchestrates request processing, approvals, and execution.
-type Engine struct {
-	config         *config.Config
-	requestRepo    *requests.Repository
-	calendarClient *google.CalendarClient
-	notifier       NotificationManager
-	webhookClient  WebhookClient
-	executionQueue *ExecutionQueue
-	auditLogger    *AuditLogger
-	tokenRepo      *tokens.Repository
+// Errors surfaced to API callers.
+var (
+	ErrRequestNotFound = errors.New("request not found")
+	ErrInvalidAction   = errors.New("invalid action")
+)
+
+// ErrAlreadyDecided reports an attempt to decide a request a second time.
+type ErrAlreadyDecided struct {
+	Status string
 }
 
-// NotificationManager interface for sending approval notifications.
+func (e *ErrAlreadyDecided) Error() string {
+	return fmt.Sprintf("request has already been %s", e.Status)
+}
+
+// CalendarClient is the calendar behaviour the engine depends on.
+type CalendarClient interface {
+	CreateEvent(ctx context.Context, intent *google.EventIntent) (*google.Event, error)
+	UpdateEvent(ctx context.Context, intent *google.EventUpdateIntent) (*google.Event, error)
+	DeleteEvent(ctx context.Context, intent *google.EventDeleteIntent) error
+}
+
+// NotificationManager sends notifications to configured providers.
 type NotificationManager interface {
 	SendApprovalRequest(ctx context.Context, req *notifications.ApprovalNotification) error
+	SendResult(ctx context.Context, result *notifications.ResultNotification)
 }
 
-// WebhookClient interface for sending Moltbot webhooks.
+// WebhookClient delivers request status updates to the calling system.
 type WebhookClient interface {
 	Deliver(ctx context.Context, event WebhookEvent) error
 }
 
-// WebhookEvent contains data for Moltbot webhook.
+// WebhookEvent is one status update for the calling system.
 type WebhookEvent struct {
 	RequestID  string
 	Status     string
@@ -52,11 +64,24 @@ type WebhookEvent struct {
 	Result     json.RawMessage
 }
 
-// NewEngine creates a new engine instance.
+// Engine orchestrates request processing, approvals, and execution.
+type Engine struct {
+	config         *config.Config
+	requestRepo    *requests.Repository
+	calendarClient CalendarClient
+	notifier       NotificationManager
+	webhookClient  WebhookClient
+	executionQueue *ExecutionQueue
+	auditLogger    *AuditLogger
+	tokenRepo      *tokens.Repository
+}
+
+// NewEngine creates an engine with a single-worker execution queue, which
+// serializes writes to Google Calendar and to SQLite.
 func NewEngine(
 	cfg *config.Config,
 	requestRepo *requests.Repository,
-	calendarClient *google.CalendarClient,
+	calendarClient CalendarClient,
 	auditLogger *AuditLogger,
 	tokenRepo *tokens.Repository,
 ) *Engine {
@@ -67,44 +92,24 @@ func NewEngine(
 		auditLogger:    auditLogger,
 		tokenRepo:      tokenRepo,
 	}
-
-	// Create execution queue with single worker
 	e.executionQueue = NewExecutionQueue(1, e)
-
 	return e
 }
 
 // SetNotifier sets the notification manager.
-func (e *Engine) SetNotifier(n NotificationManager) {
-	e.notifier = n
-}
+func (e *Engine) SetNotifier(n NotificationManager) { e.notifier = n }
 
-// SetWebhookClient sets the Moltbot webhook client.
-func (e *Engine) SetWebhookClient(c WebhookClient) {
-	e.webhookClient = c
-}
+// SetWebhookClient sets the outbound status webhook client.
+func (e *Engine) SetWebhookClient(c WebhookClient) { e.webhookClient = c }
 
-// Start starts the execution queue workers.
-func (e *Engine) Start(ctx context.Context) {
-	e.executionQueue.Start(ctx)
-}
+// Start launches the execution queue workers.
+func (e *Engine) Start(ctx context.Context) { e.executionQueue.Start(ctx) }
 
-// Stop gracefully stops the execution queue.
-func (e *Engine) Stop() {
-	e.executionQueue.Stop()
-}
+// Stop drains in-flight executions and stops the queue.
+func (e *Engine) Stop(ctx context.Context) { e.executionQueue.Stop(ctx) }
 
-// QueueExecution enqueues a request for execution.
-func (e *Engine) QueueExecution(requestID string) {
-	e.executionQueue.Enqueue(requestID)
-}
-
-// NotifyWebhookStatus sends a webhook status update.
-func (e *Engine) NotifyWebhookStatus(ctx context.Context, requestID, status string) {
-	e.notifyWebhook(ctx, requestID, status)
-}
-
-// SubmitRequest creates a new request and sends notifications.
+// SubmitRequest records a new request and either notifies approvers or, when
+// policy permits, executes it immediately.
 func (e *Engine) SubmitRequest(
 	ctx context.Context,
 	authKey *apikeys.AuthenticatedKey,
@@ -114,7 +119,6 @@ func (e *Engine) SubmitRequest(
 	approvalRequired bool,
 	decidedBy string,
 ) (*database.Request, error) {
-	// Check idempotency key first
 	if idempotencyKey != "" {
 		existing, err := e.requestRepo.FindByIdempotencyKey(ctx, authKey.ID, idempotencyKey)
 		if err != nil {
@@ -122,65 +126,81 @@ func (e *Engine) SubmitRequest(
 		}
 		if existing != nil {
 			util.Info("Returning existing request for idempotency key",
-				"request_id", existing.ID,
-				"idempotency_key", idempotencyKey,
-			)
+				"request_id", existing.ID, "idempotency_key", idempotencyKey)
 			return existing, nil
 		}
 	}
 
-	// Calculate expiry time
-	expiresAt := time.Now().Add(time.Duration(e.config.Approval.TimeoutMinutes) * time.Minute)
+	expiresAt := time.Now().Add(e.approvalTimeout())
 
-	// Create the request
 	req, err := e.requestRepo.Create(ctx, &requests.CreateRequest{
 		APIKeyID:  authKey.ID,
 		Operation: operation,
 		Payload:   payload,
 		ExpiresAt: expiresAt,
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Store idempotency key if provided
+	// Two concurrent submissions carrying the same idempotency key both get
+	// past the lookup above. The loser of the insert adopts the winner's
+	// request and discards its own, so the caller never sees two request IDs
+	// for one key and no orphan request is left pending approval.
 	if idempotencyKey != "" {
-		if err := e.requestRepo.StoreIdempotencyKey(ctx, authKey.ID, idempotencyKey, req.ID); err != nil {
-			util.Warn("Failed to store idempotency key", "error", err)
+		claimed, err := e.requestRepo.ClaimIdempotencyKey(ctx, authKey.ID, idempotencyKey, req.ID)
+		if err != nil {
+			util.Warn("Failed to store idempotency key", "error", err, "request_id", req.ID)
+		} else if !claimed {
+			if err := e.requestRepo.Delete(ctx, req.ID); err != nil {
+				util.Warn("Failed to discard duplicate request", "error", err, "request_id", req.ID)
+			}
+			winner, err := e.requestRepo.FindByIdempotencyKey(ctx, authKey.ID, idempotencyKey)
+			if err != nil || winner == nil {
+				return nil, fmt.Errorf("idempotency conflict for key %q", idempotencyKey)
+			}
+			return winner, nil
 		}
 	}
 
-	// Log to audit
-	e.auditLogger.Log(ctx, database.AuditRequestCreated, req.ID, authKey.ID, "api", map[string]interface{}{
-		"operation": operation,
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestCreated,
+		RequestID: req.ID,
+		APIKeyID:  authKey.ID,
+		Actor:     "api",
+		Details:   map[string]any{"operation": operation},
 	})
-
-	if approvalRequired {
-		// Send approval notifications (async)
-		go e.sendApprovalNotifications(context.Background(), req)
-	} else {
-		if decidedBy == "" {
-			decidedBy = "auto"
-		}
-		// Auto-approve
-		if err := e.ProcessApproval(ctx, req.ID, "approve", decidedBy); err != nil {
-			return nil, err
-		}
-		// Reload request to reflect updated status
-		req, _ = e.requestRepo.GetByID(ctx, req.ID)
-	}
 
 	util.Info("Request submitted",
 		"request_id", req.ID,
 		"operation", operation,
+		"approval_required", approvalRequired,
 		"expires_at", expiresAt,
 	)
+
+	if !approvalRequired {
+		if decidedBy == "" {
+			decidedBy = "policy"
+		}
+		if err := e.ProcessApproval(ctx, req.ID, "approve", decidedBy); err != nil {
+			return nil, err
+		}
+		if updated, err := e.requestRepo.GetByID(ctx, req.ID); err == nil && updated != nil {
+			req = updated
+		}
+		return req, nil
+	}
+
+	// Notifications reach out over the network; they must not hold up the
+	// caller's response, and they must survive the request context ending.
+	notifyCtx := context.WithoutCancel(ctx)
+	go e.sendApprovalNotifications(notifyCtx, req)
 
 	return req, nil
 }
 
-// ProcessApproval handles an approval decision.
+// ProcessApproval records an approve or deny decision and, on approval, queues
+// the request for execution.
 func (e *Engine) ProcessApproval(ctx context.Context, requestID, action, decidedBy string) error {
 	var newStatus string
 	switch action {
@@ -189,67 +209,70 @@ func (e *Engine) ProcessApproval(ctx context.Context, requestID, action, decided
 	case "deny":
 		newStatus = database.StatusDenied
 	default:
-		return fmt.Errorf("invalid action: %s", action)
+		return fmt.Errorf("%w: %s", ErrInvalidAction, action)
 	}
 
-	// Atomically update status
 	updated, err := e.requestRepo.UpdateStatus(ctx, requestID, newStatus, decidedBy)
 	if err != nil {
 		return err
 	}
-
 	if !updated {
-		// Request was already decided
-		req, _ := e.requestRepo.GetByID(ctx, requestID)
-		if req != nil {
-			return fmt.Errorf("request already %s", req.Status)
+		req, err := e.requestRepo.GetByID(ctx, requestID)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("request not found")
+		if req == nil {
+			return ErrRequestNotFound
+		}
+		return &ErrAlreadyDecided{Status: req.Status}
 	}
 
-	// Log to audit
 	auditEvent := database.AuditRequestApproved
 	if action == "deny" {
 		auditEvent = database.AuditRequestDenied
 	}
-	e.auditLogger.Log(ctx, auditEvent, requestID, "", decidedBy, nil)
+	e.auditLogger.Log(ctx, Entry{
+		EventType: auditEvent,
+		RequestID: requestID,
+		Actor:     decidedBy,
+	})
 
-	// If approved, queue for execution
 	if action == "approve" {
 		e.executionQueue.Enqueue(requestID)
 	}
 
-	// Send webhook notification
-	go e.notifyWebhook(context.Background(), requestID, newStatus)
+	e.notifyWebhookAsync(ctx, requestID, newStatus, "")
 
 	util.Info("Request decision processed",
-		"request_id", requestID,
-		"action", action,
-		"decided_by", decidedBy,
-	)
+		"request_id", requestID, "action", action, "decided_by", decidedBy)
 
 	return nil
 }
 
-// ProcessSuggestion handles a change suggestion.
+// ProcessSuggestion records requested changes against a pending request.
 func (e *Engine) ProcessSuggestion(ctx context.Context, requestID, suggestion, suggestedBy string) error {
+	suggestion = util.SanitizeText(suggestion)
+	if suggestion == "" {
+		return errors.New("suggestion text is required")
+	}
+	if err := util.ValidateLength("suggestion", suggestion, util.MaxDescriptionLength); err != nil {
+		return err
+	}
+
 	if err := e.requestRepo.SetSuggestion(ctx, requestID, suggestion, suggestedBy); err != nil {
 		return err
 	}
 
-	// Log to audit
-	e.auditLogger.Log(ctx, database.AuditRequestChanged, requestID, "", suggestedBy, map[string]interface{}{
-		"suggestion": suggestion,
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestChanged,
+		RequestID: requestID,
+		Actor:     suggestedBy,
+		Details:   map[string]any{"suggestion": suggestion},
 	})
 
-	// Send webhook notification with suggestion
-	go e.notifyWebhookWithSuggestion(context.Background(), requestID, suggestion)
+	e.notifyWebhookAsync(ctx, requestID, database.StatusChangeRequested, suggestion)
 
-	util.Info("Suggestion recorded",
-		"request_id", requestID,
-		"suggested_by", suggestedBy,
-	)
-
+	util.Info("Suggestion recorded", "request_id", requestID, "suggested_by", suggestedBy)
 	return nil
 }
 
@@ -258,135 +281,192 @@ func (e *Engine) GetRequest(ctx context.Context, requestID string) (*database.Re
 	return e.requestRepo.GetByID(ctx, requestID)
 }
 
-// CancelRequest cancels a pending request.
+// CancelRequest withdraws a pending request on behalf of its owning key.
 func (e *Engine) CancelRequest(ctx context.Context, requestID, apiKeyID string) error {
 	if err := e.requestRepo.Cancel(ctx, requestID, apiKeyID); err != nil {
 		return err
 	}
 
-	e.auditLogger.Log(ctx, database.AuditRequestCancelled, requestID, apiKeyID, "api", nil)
-
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestCancelled,
+		RequestID: requestID,
+		APIKeyID:  apiKeyID,
+		Actor:     "api",
+	})
 	return nil
 }
 
-// ExecuteRequest executes an approved request.
+// NotifyWebhookStatus delivers a status update for a request, used by the
+// timeout worker after expiring a request.
+func (e *Engine) NotifyWebhookStatus(ctx context.Context, requestID, status string) {
+	e.notifyWebhook(ctx, requestID, status, "")
+}
+
+// ExecuteRequest performs the calendar operation behind an approved request.
 func (e *Engine) ExecuteRequest(ctx context.Context, requestID string) error {
 	req, err := e.requestRepo.GetByID(ctx, requestID)
-	if err != nil || req == nil {
-		return fmt.Errorf("request not found: %s", requestID)
-	}
-
-	if req.Status != database.StatusApproved {
-		return fmt.Errorf("request is not approved: %s", req.Status)
-	}
-
-	// Mark as executing
-	if err := e.requestRepo.SetExecuting(ctx, requestID); err != nil {
+	if err != nil {
 		return err
 	}
-
-	e.auditLogger.Log(ctx, database.AuditRequestExecuting, requestID, req.APIKeyID, "engine", nil)
-
-	// Execute based on operation type
-	var result interface{}
-	var execErr error
-
-	switch req.Operation {
-	case database.OperationCreateEvent:
-		result, execErr = e.executeCreateEvent(ctx, req)
-	case database.OperationUpdateEvent:
-		result, execErr = e.executeUpdateEvent(ctx, req)
-	case database.OperationDeleteEvent:
-		execErr = e.executeDeleteEvent(ctx, req)
-	default:
-		execErr = fmt.Errorf("unknown operation: %s", req.Operation)
+	if req == nil {
+		return ErrRequestNotFound
 	}
 
+	// Claiming the request is what prevents a duplicate queue entry, a retry,
+	// and a restart from all executing the same calendar write.
+	claimed, err := e.requestRepo.SetExecuting(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		util.Debug("Skipping request that is not awaiting execution",
+			"request_id", requestID, "status", req.Status)
+		return nil
+	}
+
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestExecuting,
+		RequestID: requestID,
+		APIKeyID:  req.APIKeyID,
+		Actor:     "engine",
+	})
+
+	result, execErr := e.execute(ctx, req)
 	if execErr != nil {
-		// Check if retryable
-		if e.isRetryable(execErr) && req.RetryCount < e.config.Retry.MaxAttempts {
-			util.Warn("Request execution failed, will retry",
-				"request_id", requestID,
-				"error", execErr,
-				"retry_count", req.RetryCount,
-			)
-			e.requestRepo.IncrementRetryCount(ctx, requestID)
-			// Re-queue after backoff
-			go func() {
-				backoff := e.getBackoffDuration(req.RetryCount)
-				time.Sleep(backoff)
-				e.executionQueue.Enqueue(requestID)
-			}()
-			return nil
-		}
-
-		// Mark as failed
-		e.requestRepo.SetError(ctx, requestID, execErr.Error())
-		e.auditLogger.Log(ctx, database.AuditRequestFailed, requestID, req.APIKeyID, "engine", map[string]interface{}{
-			"error": execErr.Error(),
-		})
-		go e.notifyWebhook(context.Background(), requestID, database.StatusFailed)
-		return execErr
+		return e.handleExecutionFailure(ctx, req, execErr)
 	}
 
-	// Store result
 	var resultJSON json.RawMessage
 	if result != nil {
-		resultJSON, _ = json.Marshal(result)
+		if resultJSON, err = json.Marshal(result); err != nil {
+			util.Warn("Failed to encode execution result", "error", err, "request_id", requestID)
+		}
 	}
 	if err := e.requestRepo.SetResult(ctx, requestID, resultJSON); err != nil {
-		util.Error("Failed to store result", "error", err)
+		util.Error("Failed to store execution result", "error", err, "request_id", requestID)
 	}
 
-	e.auditLogger.Log(ctx, database.AuditRequestCompleted, requestID, req.APIKeyID, "engine", nil)
-	go e.notifyWebhook(context.Background(), requestID, database.StatusCompleted)
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestCompleted,
+		RequestID: requestID,
+		APIKeyID:  req.APIKeyID,
+		Actor:     "engine",
+	})
+	e.notifyWebhookAsync(ctx, requestID, database.StatusCompleted, "")
+	e.notifyOutcome(ctx, req, database.StatusCompleted, "", eventLink(result))
 
 	util.Info("Request executed successfully", "request_id", requestID)
-
 	return nil
 }
 
-// Helper methods
-
-func (e *Engine) executeCreateEvent(ctx context.Context, req *database.Request) (*google.Event, error) {
-	var intent google.EventIntent
-	if err := json.Unmarshal(req.Payload, &intent); err != nil {
-		return nil, fmt.Errorf("invalid payload: %w", err)
+// notifyOutcome tells the approver what became of the request they decided.
+//
+// Approval is only half of the interaction: a request that is approved and then
+// fails against Google would otherwise leave the operator believing the change
+// was made.
+func (e *Engine) notifyOutcome(ctx context.Context, req *database.Request, status, errText, eventURL string) {
+	if e.notifier == nil {
+		return
 	}
 
-	return e.calendarClient.CreateEvent(ctx, &intent)
-}
-
-func (e *Engine) executeUpdateEvent(ctx context.Context, req *database.Request) (*google.Event, error) {
-	var intent google.EventUpdateIntent
-	if err := json.Unmarshal(req.Payload, &intent); err != nil {
-		return nil, fmt.Errorf("invalid payload: %w", err)
+	// The in-memory request predates the status write, so the failure reason is
+	// taken from the error that was just recorded rather than re-read from it.
+	message := statusMessage(req, status)
+	if status == database.StatusFailed {
+		message = "Your calendar request could not be completed."
+		if errText != "" {
+			message = fmt.Sprintf("Your calendar request could not be completed: %s",
+				util.TruncateString(errText, 300))
+		}
 	}
 
-	util.Debug("Executing update event",
-		"request_id", req.ID,
-		"calendar_id", intent.CalendarID,
-		"event_id", intent.EventID,
-	)
-
-	return e.calendarClient.UpdateEvent(ctx, &intent)
-}
-
-func (e *Engine) executeDeleteEvent(ctx context.Context, req *database.Request) error {
-	var intent google.EventDeleteIntent
-	if err := json.Unmarshal(req.Payload, &intent); err != nil {
-		return fmt.Errorf("invalid payload: %w", err)
+	details := DescribeRequest(req)
+	if details != nil && details.Title != "" {
+		message = fmt.Sprintf("%s (%s)", message, details.Title)
 	}
 
-	util.Debug("Executing delete event",
-		"request_id", req.ID,
-		"calendar_id", intent.CalendarID,
-		"event_id", intent.EventID,
-	)
+	notification := &notifications.ResultNotification{
+		RequestID: req.ID,
+		Operation: req.Operation,
+		Status:    status,
+		Message:   message,
+		EventURL:  eventURL,
+		Error:     errText,
+	}
 
-	return e.calendarClient.DeleteEvent(ctx, &intent)
+	sendCtx := context.WithoutCancel(ctx)
+	go e.notifier.SendResult(sendCtx, notification)
 }
 
+// eventLink extracts the Google Calendar link from an execution result.
+func eventLink(result any) string {
+	if event, ok := result.(*google.Event); ok && event != nil {
+		return event.HTMLLink
+	}
+	return ""
+}
+
+// execute dispatches to the calendar operation named by the request.
+func (e *Engine) execute(ctx context.Context, req *database.Request) (any, error) {
+	switch req.Operation {
+	case database.OperationCreateEvent:
+		var intent google.EventIntent
+		if err := json.Unmarshal(req.Payload, &intent); err != nil {
+			return nil, fmt.Errorf("invalid payload: %w", err)
+		}
+		return e.calendarClient.CreateEvent(ctx, &intent)
+
+	case database.OperationUpdateEvent:
+		var intent google.EventUpdateIntent
+		if err := json.Unmarshal(req.Payload, &intent); err != nil {
+			return nil, fmt.Errorf("invalid payload: %w", err)
+		}
+		return e.calendarClient.UpdateEvent(ctx, &intent)
+
+	case database.OperationDeleteEvent:
+		var intent google.EventDeleteIntent
+		if err := json.Unmarshal(req.Payload, &intent); err != nil {
+			return nil, fmt.Errorf("invalid payload: %w", err)
+		}
+		return nil, e.calendarClient.DeleteEvent(ctx, &intent)
+
+	default:
+		return nil, fmt.Errorf("unknown operation: %s", req.Operation)
+	}
+}
+
+// handleExecutionFailure either schedules a retry or records terminal failure.
+func (e *Engine) handleExecutionFailure(ctx context.Context, req *database.Request, execErr error) error {
+	if e.isRetryable(execErr) && req.RetryCount < e.config.Retry.MaxAttempts {
+		if err := e.requestRepo.ScheduleRetry(ctx, req.ID); err != nil {
+			util.Error("Failed to schedule retry", "error", err, "request_id", req.ID)
+		} else {
+			backoff := e.backoffFor(req.RetryCount)
+			util.Warn("Request execution failed, retrying",
+				"request_id", req.ID, "error", execErr,
+				"attempt", req.RetryCount+1, "backoff", backoff)
+			e.executionQueue.EnqueueAfter(req.ID, backoff)
+			return nil
+		}
+	}
+
+	if err := e.requestRepo.SetError(ctx, req.ID, execErr.Error()); err != nil {
+		util.Error("Failed to record execution error", "error", err, "request_id", req.ID)
+	}
+	e.auditLogger.Log(ctx, Entry{
+		EventType: database.AuditRequestFailed,
+		RequestID: req.ID,
+		APIKeyID:  req.APIKeyID,
+		Actor:     "engine",
+		Details:   map[string]any{"error": execErr.Error()},
+	})
+	e.notifyWebhookAsync(ctx, req.ID, database.StatusFailed, "")
+	e.notifyOutcome(ctx, req, database.StatusFailed, execErr.Error(), "")
+
+	return execErr
+}
+
+// isRetryable reports whether a failure is worth another attempt.
 func (e *Engine) isRetryable(err error) bool {
 	if !e.config.Retry.Enabled {
 		return false
@@ -399,33 +479,56 @@ func (e *Engine) isRetryable(err error) bool {
 				return true
 			}
 		}
+		// A definitive answer from Google (404, 403, 400) will not change.
+		return false
 	}
 
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// A cancelled context means shutdown, not a transient upstream fault; the
+	// request stays approved and is picked up after restart.
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
 
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 
 	return false
 }
 
-func (e *Engine) getBackoffDuration(retryCount int) time.Duration {
-	if retryCount >= len(e.config.Retry.BackoffSeconds) {
-		retryCount = len(e.config.Retry.BackoffSeconds) - 1
+func (e *Engine) backoffFor(retryCount int) time.Duration {
+	backoffs := e.config.Retry.BackoffSeconds
+	if len(backoffs) == 0 {
+		return 5 * time.Second
 	}
-	return time.Duration(e.config.Retry.BackoffSeconds[retryCount]) * time.Second
+	if retryCount >= len(backoffs) {
+		retryCount = len(backoffs) - 1
+	}
+	if retryCount < 0 {
+		retryCount = 0
+	}
+	return time.Duration(backoffs[retryCount]) * time.Second
 }
 
+func (e *Engine) approvalTimeout() time.Duration {
+	minutes := e.config.Approval.TimeoutMinutes
+	if minutes <= 0 {
+		minutes = 60
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// sendApprovalNotifications mints a decision token and fans the request out to
+// every configured notification provider.
 func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Request) {
 	if e.notifier == nil {
 		return
 	}
 
-	// Create decision token for callbacks if possible
 	var decisionToken string
 	if e.tokenRepo != nil {
 		token, err := e.tokenRepo.Create(ctx, req.ID, req.ExpiresAt)
@@ -436,31 +539,15 @@ func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Re
 		}
 	}
 
-	// Parse payload to get event details
-	var details *notifications.EventDetails
-	if req.Operation == database.OperationCreateEvent {
-		var intent google.EventIntent
-		if err := json.Unmarshal(req.Payload, &intent); err == nil {
-			details = &notifications.EventDetails{
-				Title:       intent.Summary,
-				StartTime:   intent.Start,
-				EndTime:     intent.End,
-				Location:    intent.Location,
-				Attendees:   intent.Attendees,
-				Description: intent.Description,
-			}
-		}
-	}
-
+	details := DescribeRequest(req)
 	notification := &notifications.ApprovalNotification{
-		RequestID: req.ID,
-		Operation: req.Operation,
-		Summary:   getOperationSummary(req.Operation, details),
-		Details:   details,
-		ExpiresAt: req.ExpiresAt,
-		ExpiresIn: util.GetDefaultFormatter().FormatExpiresIn(req.ExpiresAt),
+		RequestID:     req.ID,
+		Operation:     req.Operation,
+		Summary:       SummarizeOperation(req.Operation, details),
+		Details:       details,
+		ExpiresAt:     req.ExpiresAt,
+		ExpiresIn:     util.GetDefaultFormatter().FormatExpiresIn(req.ExpiresAt),
 		DecisionToken: decisionToken,
-		// URLs will be set by the notification manager based on config
 	}
 
 	if err := e.notifier.SendApprovalRequest(ctx, notification); err != nil {
@@ -468,52 +555,36 @@ func (e *Engine) sendApprovalNotifications(ctx context.Context, req *database.Re
 	}
 }
 
-func (e *Engine) notifyWebhook(ctx context.Context, requestID, status string) {
-	if e.webhookClient == nil {
+// notifyWebhookAsync delivers a status update without blocking the caller.
+func (e *Engine) notifyWebhookAsync(ctx context.Context, requestID, status, suggestion string) {
+	if e.webhookClient == nil || !e.shouldNotify(status) {
 		return
 	}
-	if !e.shouldNotify(status) {
-		return
-	}
-
-	req, err := e.requestRepo.GetByID(ctx, requestID)
-	if err != nil || req == nil {
-		return
-	}
-
-	event := WebhookEvent{
-		RequestID: requestID,
-		Status:    status,
-		Message:   buildWebhookMessage(req, status),
-		Result:    req.Result,
-	}
-
-	if err := e.webhookClient.Deliver(ctx, event); err != nil {
-		util.Error("Failed to deliver webhook", "error", err, "request_id", requestID)
-		return
-	}
-
-	e.requestRepo.SetWebhookNotified(ctx, requestID)
+	deliverCtx := context.WithoutCancel(ctx)
+	go e.notifyWebhook(deliverCtx, requestID, status, suggestion)
 }
 
-func (e *Engine) notifyWebhookWithSuggestion(ctx context.Context, requestID, suggestion string) {
-	if e.webhookClient == nil {
-		return
-	}
-	if !e.shouldNotify(database.StatusChangeRequested) {
+func (e *Engine) notifyWebhook(ctx context.Context, requestID, status, suggestion string) {
+	if e.webhookClient == nil || !e.shouldNotify(status) {
 		return
 	}
 
 	req, err := e.requestRepo.GetByID(ctx, requestID)
 	if err != nil || req == nil {
+		util.Warn("Skipping webhook for unreadable request", "request_id", requestID, "error", err)
 		return
 	}
 
 	event := WebhookEvent{
 		RequestID:  requestID,
-		Status:     database.StatusChangeRequested,
-		Message:    buildSuggestionMessage(req, suggestion),
+		Status:     status,
 		Suggestion: suggestion,
+		Result:     req.Result,
+	}
+	if suggestion != "" {
+		event.Message = suggestionMessage(req, suggestion)
+	} else {
+		event.Message = statusMessage(req, status)
 	}
 
 	if err := e.webhookClient.Deliver(ctx, event); err != nil {
@@ -521,17 +592,17 @@ func (e *Engine) notifyWebhookWithSuggestion(ctx context.Context, requestID, sug
 		return
 	}
 
-	e.requestRepo.SetWebhookNotified(ctx, requestID)
+	if err := e.requestRepo.SetWebhookNotified(ctx, requestID); err != nil {
+		util.Warn("Failed to record webhook delivery", "error", err, "request_id", requestID)
+	}
 }
 
 func (e *Engine) shouldNotify(status string) bool {
-	if e.webhookClient == nil {
-		return false
-	}
-	if len(e.config.Moltbot.Webhook.NotifyOn) == 0 {
+	notifyOn := e.config.Moltbot.Webhook.NotifyOn
+	if len(notifyOn) == 0 {
 		return true
 	}
-	for _, allowed := range e.config.Moltbot.Webhook.NotifyOn {
+	for _, allowed := range notifyOn {
 		if allowed == status {
 			return true
 		}
@@ -539,23 +610,7 @@ func (e *Engine) shouldNotify(status string) bool {
 	return false
 }
 
-func getOperationSummary(operation string, details *notifications.EventDetails) string {
-	switch operation {
-	case database.OperationCreateEvent:
-		if details != nil {
-			return fmt.Sprintf("Create: %s", details.Title)
-		}
-		return "Create Event"
-	case database.OperationUpdateEvent:
-		return "Update Event"
-	case database.OperationDeleteEvent:
-		return "Delete Event"
-	default:
-		return operation
-	}
-}
-
-func buildWebhookMessage(req *database.Request, status string) string {
+func statusMessage(req *database.Request, status string) string {
 	switch status {
 	case database.StatusApproved:
 		return "Your calendar request has been approved and is being executed."
@@ -567,16 +622,18 @@ func buildWebhookMessage(req *database.Request, status string) string {
 		return fmt.Sprintf("Your calendar request failed: %s", req.Error.String)
 	case database.StatusExpired:
 		return "Your calendar request expired without a response."
+	case database.StatusCancelled:
+		return "Your calendar request was cancelled."
 	default:
 		return fmt.Sprintf("Calendar request status: %s", status)
 	}
 }
 
-func buildSuggestionMessage(req *database.Request, suggestion string) string {
+func suggestionMessage(req *database.Request, suggestion string) string {
 	return fmt.Sprintf(`Calendar request needs changes.
 
 Operation: %s
-Suggestion: "%s"
+Suggestion: %q
 
 Please modify the request based on this feedback and resubmit.`, req.Operation, suggestion)
 }

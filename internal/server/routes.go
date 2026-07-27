@@ -1,84 +1,73 @@
-// Package server provides route registration for SchedLock.
 package server
 
 import (
 	_ "embed"
-	"encoding/json"
 	"net/http"
 
+	"github.com/dtorcivia/schedlock/internal/response"
 	"github.com/dtorcivia/schedlock/internal/server/middleware"
+	"github.com/dtorcivia/schedlock/internal/web"
 )
 
 //go:embed SKILL.md
 var skillMD []byte
 
-// setupRoutes registers all HTTP routes.
+// setupRoutes registers every HTTP route.
 func (s *Server) setupRoutes() {
-	// Health check (no auth required)
 	s.router.HandleFunc("GET /health", s.handleHealth)
 	s.router.HandleFunc("GET /api/health", s.handleHealth)
 
-	// Callback routes (token-based auth, no API key required)
-	// These must be registered before the authenticated /api/* handler
-	s.router.HandleFunc("POST /api/callback/approve/{token}", s.apiHandler.ApproveCallback)
-	s.router.HandleFunc("POST /api/callback/deny/{token}", s.apiHandler.DenyCallback)
-	s.router.HandleFunc("POST /api/callback/suggest/{token}", s.apiHandler.SuggestCallback)
-	s.router.HandleFunc("GET /api/callback/approve/{token}", s.apiHandler.ApproveCallback)
-	s.router.HandleFunc("GET /api/callback/deny/{token}", s.apiHandler.DenyCallback)
+	// Decision callbacks authenticate with a token in the path, so they are
+	// registered before (and outside) the API-key-protected subtree. Go's
+	// pattern matching prefers these more specific patterns over /api/.
+	s.apiHandler.RegisterCallbackRoutes(s.router)
 
-	// API routes with API key authentication
+	// API routes behind API key authentication and rate limiting.
 	apiMux := http.NewServeMux()
 	s.apiHandler.RegisterRoutes(apiMux)
+	s.router.Handle("/api/", middleware.APIKeyAuth(s.webHandler.APIKeyRepo(), s.rateLimiter, s.usageRecorder)(apiMux))
 
-	// Wrap API routes with authentication and rate limiting
-	apiHandler := middleware.APIKeyAuth(s.apiKeyRepo, s.rateLimiter)(apiMux)
-	s.router.Handle("/api/{path...}", apiHandler)
-
-	// Telegram webhook (special auth via bot token in URL)
-	if s.telegramHandler != nil {
-		s.router.Handle("POST "+s.config.Notifications.Telegram.WebhookPath, s.telegramHandler)
+	// Telegram authenticates with its own shared secret header.
+	if path := s.config.Notifications.Telegram.WebhookPath; path != "" {
+		s.router.Handle("POST "+path, s.telegramHandler)
 	}
 
-	// Web UI routes
 	s.webHandler.RegisterRoutes(s.router)
 
-	// SKILL.md for agent discovery
+	// Machine-readable usage instructions for agents.
 	s.router.HandleFunc("GET /SKILL.md", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.Write(skillMD)
+		if _, err := w.Write(skillMD); err != nil {
+			return
+		}
 	})
 
-	// Static files
-	s.router.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	s.router.Handle("GET /static/", web.StaticHandler())
 }
 
-// handleHealth returns server health status.
+// handleHealth reports whether the server can serve requests.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Check database connectivity
-	if err := s.db.Ping(); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+	ctx := r.Context()
+
+	if err := s.db.PingContext(ctx); err != nil {
+		response.JSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": "unhealthy",
 			"error":  "database unavailable",
 		})
 		return
 	}
 
-	// Check if OAuth is configured
-	oauthStatus := "not_configured"
-	if s.oauthMgr.IsAuthenticated() {
-		oauthStatus = "connected"
+	calendar := "not_configured"
+	switch {
+	case s.oauthMgr.HasToken(ctx):
+		calendar = "connected"
+	case s.oauthMgr.IsConfigured(ctx):
+		calendar = "configured"
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "healthy",
-		"version": "1.0.0",
-		"oauth":   oauthStatus,
+	response.JSON(w, http.StatusOK, map[string]any{
+		"status":   "healthy",
+		"version":  Version,
+		"calendar": calendar,
 	})
-}
-
-// writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
 }

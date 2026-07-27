@@ -1,0 +1,53 @@
+{{define "content"}}
+<div class="page-header">
+    <h1>Audit history</h1>
+    <p>Every decision and system action, in order</p>
+</div>
+
+{{if .Entries}}
+<div class="card animate-fade-in-scale">
+    <div class="table-container">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Event</th>
+                    <th>Request</th>
+                    <th>Who</th>
+                    <th>From</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Entries}}
+                <tr>
+                    <td>{{formatTime .Timestamp}}</td>
+                    <td><span class="badge badge-default">{{.EventType}}</span></td>
+                    <td>
+                        {{if .RequestID}}
+                        <a href="/requests/{{.RequestID}}" class="font-mono text-xs">{{.RequestID}}</a>
+                        {{else}}
+                        <span style="color: var(--text-muted);">&mdash;</span>
+                        {{end}}
+                    </td>
+                    <td style="color: var(--text-primary); font-weight: 500;">
+                        {{if .Actor}}{{.Actor}}{{else}}<span style="color: var(--text-muted); font-weight: 400;">&mdash;</span>{{end}}
+                    </td>
+                    <td class="font-mono" style="font-size: var(--text-xs);">
+                        {{if .IPAddress}}{{.IPAddress}}{{else}}&mdash;{{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{else}}
+<div class="empty-state animate-fade-in">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1" stroke="currentColor" class="empty-state-icon">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <h3>No history yet</h3>
+    <p>Decisions and system actions will appear here.</p>
+</div>
+{{end}}
+{{end}}

@@ -1,124 +1,140 @@
 package web
 
 import (
-	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/dtorcivia/schedlock/internal/config"
 	schedcrypto "github.com/dtorcivia/schedlock/internal/crypto"
+	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// SetupHandler handles the first-run setup wizard.
+// minAdminPasswordLength is the shortest admin password accepted. This password
+// guards every calendar operation the proxy can perform.
+const minAdminPasswordLength = 12
+
+// SetupHandler serves the first-run wizard.
+//
+// The wizard runs before any password exists, so it cannot be authenticated. It
+// is available only while the instance is unconfigured, and completing it is
+// what closes the window: the first person to reach a fresh instance claims it,
+// so a new deployment should not be exposed publicly until setup is done.
 type SetupHandler struct {
 	config     *config.Config
-	templates  *template.Template
+	templates  *TemplateSet
 	configPath string
+	onComplete func()
 }
 
-// NewSetupHandler creates a new setup handler.
-func NewSetupHandler(cfg *config.Config, configPath string) (*SetupHandler, error) {
-	tmpl, err := loadTemplates("web/templates")
+// NewSetupHandler creates the setup wizard handler. onComplete is called after
+// the configuration is written, so the process can restart into normal mode.
+func NewSetupHandler(cfg *config.Config, configPath string, onComplete func()) (*SetupHandler, error) {
+	templates, err := LoadTemplates()
 	if err != nil {
 		return nil, err
 	}
 	return &SetupHandler{
 		config:     cfg,
-		templates:  tmpl,
+		templates:  templates,
 		configPath: configPath,
+		onComplete: onComplete,
 	}, nil
 }
 
-// Setup displays the setup wizard.
-func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "setup.html", map[string]interface{}{
-		"Title":   "Initial Setup",
-		"BaseURL": h.config.Server.BaseURL,
+// RegisterRoutes registers the wizard's routes.
+func (h *SetupHandler) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /setup", h.Setup)
+	mux.HandleFunc("POST /setup", h.SetupSubmit)
+	mux.Handle("GET /static/", StaticHandler())
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 	})
 }
 
-// SetupSubmit handles the setup form submission.
+// Setup shows the wizard.
+func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
+	h.render(w, http.StatusOK, pageData{
+		"Title":       "Set up SchedLock",
+		"BaseURL":     h.config.Server.BaseURL,
+		"RedirectURI": strings.TrimRight(h.config.Server.BaseURL, "/") + "/oauth/callback",
+		"MinPassword": minAdminPasswordLength,
+	})
+}
+
+// SetupSubmit stores the initial configuration.
 func (h *SetupHandler) SetupSubmit(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
-	confirmPassword := r.FormValue("confirm_password")
-	baseURL := r.FormValue("base_url")
-	googleClientID := r.FormValue("google_client_id")
-	googleClientSecret := r.FormValue("google_client_secret")
+	confirm := r.FormValue("confirm_password")
+	baseURL := strings.TrimRight(strings.TrimSpace(r.FormValue("base_url")), "/")
+	clientID := strings.TrimSpace(r.FormValue("google_client_id"))
+	clientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
 
-	// Validation
-	if password == "" {
-		h.renderError(w, "Password is required")
+	switch {
+	case len(password) < minAdminPasswordLength:
+		h.renderError(w, baseURL, "The password must be at least 12 characters.")
 		return
-	}
-	if len(password) < 8 {
-		h.renderError(w, "Password must be at least 8 characters")
+	case password != confirm:
+		h.renderError(w, baseURL, "The passwords do not match.")
 		return
-	}
-	if password != confirmPassword {
-		h.renderError(w, "Passwords do not match")
+	case baseURL != "" && !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://"):
+		h.renderError(w, baseURL, "The base URL must start with http:// or https://.")
+		return
+	case (clientID == "") != (clientSecret == ""):
+		h.renderError(w, baseURL, "Enter both a Google client ID and secret, or leave both blank.")
 		return
 	}
 
-	// Hash password
 	hash, err := schedcrypto.HashPassword(password)
 	if err != nil {
-		h.renderError(w, "Failed to hash password: "+err.Error())
+		util.Error("Failed to hash the admin password", "error", err)
+		h.renderError(w, baseURL, "The password could not be saved.")
 		return
 	}
 
-	// Update config
 	h.config.Auth.AdminPasswordHash = hash
 	if baseURL != "" {
 		h.config.Server.BaseURL = baseURL
 		h.config.Google.RedirectURI = baseURL + "/oauth/callback"
 	}
-	if googleClientID != "" {
-		h.config.Google.ClientID = googleClientID
-	}
-	if googleClientSecret != "" {
-		h.config.Google.ClientSecret = googleClientSecret
+	if clientID != "" {
+		h.config.Google.ClientID = clientID
+		h.config.Google.ClientSecret = clientSecret
 	}
 
-	// Save config file
 	if err := config.SaveConfigFile(h.config, h.configPath); err != nil {
-		h.renderError(w, "Failed to save configuration: "+err.Error())
+		util.Error("Failed to write the configuration file", "error", err, "path", h.configPath)
+		h.renderError(w, baseURL, "The configuration could not be written. Check that the data directory is writable.")
 		return
 	}
 
-	// Render success page with restart instructions
-	h.render(w, "setup_complete.html", map[string]interface{}{
-		"Title": "Setup Complete",
-	})
-}
+	util.Info("Setup complete", "config_path", h.configPath)
 
-// RegisterRoutes registers setup wizard routes.
-func (h *SetupHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /setup", h.Setup)
-	mux.HandleFunc("POST /setup", h.SetupSubmit)
-
-	// Redirect all other routes to setup
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" && r.URL.Path != "/setup" {
-			http.Redirect(w, r, "/setup", http.StatusFound)
-			return
-		}
-		http.Redirect(w, r, "/setup", http.StatusFound)
-	})
-}
-
-func (h *SetupHandler) render(w http.ResponseWriter, name string, data map[string]interface{}) {
-	if data == nil {
-		data = make(map[string]interface{})
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
-}
-
-func (h *SetupHandler) renderError(w http.ResponseWriter, msg string) {
-	h.render(w, "setup.html", map[string]interface{}{
-		"Title":   "Initial Setup",
-		"Error":   msg,
+	h.render(w, http.StatusOK, pageData{
+		"Title":   "Setup complete",
 		"BaseURL": h.config.Server.BaseURL,
+	})
+
+	// Restarting is what switches the process out of setup mode and into the
+	// configured application.
+	if h.onComplete != nil {
+		go h.onComplete()
+	}
+}
+
+func (h *SetupHandler) render(w http.ResponseWriter, status int, data pageData) {
+	page := "setup.html"
+	if data["Title"] == "Setup complete" {
+		page = "setup_complete.html"
+	}
+	h.templates.Render(w, status, page, data)
+}
+
+func (h *SetupHandler) renderError(w http.ResponseWriter, baseURL, message string) {
+	h.render(w, http.StatusBadRequest, pageData{
+		"Title":       "Set up SchedLock",
+		"Error":       message,
+		"BaseURL":     baseURL,
+		"RedirectURI": strings.TrimRight(baseURL, "/") + "/oauth/callback",
+		"MinPassword": minAdminPasswordLength,
 	})
 }

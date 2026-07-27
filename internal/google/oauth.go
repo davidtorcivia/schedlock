@@ -1,435 +1,358 @@
-// Package google provides Google Calendar OAuth and API integration.
+// Package google provides Google OAuth token management.
 package google
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
+	googleoauth "golang.org/x/oauth2/google"
 
 	"github.com/dtorcivia/schedlock/internal/config"
 	"github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
-	"github.com/dtorcivia/schedlock/internal/notifications"
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// OAuthManager handles Google OAuth token management.
-type OAuthManager struct {
-	config    *oauth2.Config
-	db        *database.DB
-	encryptor *crypto.Encryptor
-	mu        sync.RWMutex // Serialize token refresh and credential updates
+// Errors reported by the OAuth manager.
+var (
+	ErrNotConfigured  = errors.New("google OAuth credentials are not configured")
+	ErrNoToken        = errors.New("google Calendar is not connected")
+	ErrStateNotFound  = errors.New("no pending authorization")
+	ErrStateMismatch  = errors.New("authorization state does not match")
+	ErrStateExpired   = errors.New("authorization request expired; please try again")
+	oauthStateTimeout = 10 * time.Minute
+)
 
-	// For dynamic credential updates
-	credStore *notifications.CredentialsStore
-	baseURL   string
-	scopes    []string
+// refreshLeeway is how long before expiry an access token is refreshed.
+const refreshLeeway = 5 * time.Minute
 
-	// In-memory token cache
-	cachedToken *oauth2.Token
-	cacheExpiry time.Time
+// CredentialLoader supplies OAuth client credentials stored at runtime.
+type CredentialLoader interface {
+	LoadGoogleOAuth(ctx context.Context) (clientID, clientSecret string, err error)
 }
 
-// NewOAuthManager creates a new OAuth manager.
-func NewOAuthManager(cfg *config.Config, db *database.DB, encryptor *crypto.Encryptor) *OAuthManager {
-	oauthConfig := &oauth2.Config{
-		ClientID:     cfg.Google.ClientID,
-		ClientSecret: cfg.Google.ClientSecret,
-		RedirectURL:  cfg.Google.RedirectURI,
-		Scopes:       cfg.Google.Scopes,
-		Endpoint:     google.Endpoint,
-	}
+// OAuthManager owns the Google OAuth client configuration and the stored
+// refresh token.
+type OAuthManager struct {
+	db        *database.DB
+	encryptor *crypto.Encryptor
+	credStore CredentialLoader
 
-	return &OAuthManager{
-		config:    oauthConfig,
+	// mu guards every field below. Credentials and the base URL are mutated at
+	// runtime from the settings page while requests are reading them.
+	mu          sync.Mutex
+	oauthConfig *oauth2.Config
+	baseURL     string
+	scopes      []string
+	cachedToken *oauth2.Token
+}
+
+// NewOAuthManager creates an OAuth manager from static configuration.
+func NewOAuthManager(cfg *config.Config, db *database.DB, encryptor *crypto.Encryptor) *OAuthManager {
+	m := &OAuthManager{
 		db:        db,
 		encryptor: encryptor,
 		baseURL:   cfg.Server.BaseURL,
 		scopes:    cfg.Google.Scopes,
 	}
+	m.oauthConfig = m.buildConfig(cfg.Google.ClientID, cfg.Google.ClientSecret, cfg.Google.RedirectURI)
+	return m
 }
 
-// SetCredentialStore sets the credential store for dynamic credential loading.
-func (m *OAuthManager) SetCredentialStore(store *notifications.CredentialsStore) {
+// SetCredentialStore attaches the runtime credential store.
+func (m *OAuthManager) SetCredentialStore(store CredentialLoader) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.credStore = store
 }
 
-// UpdateCredentials updates OAuth credentials and rebuilds the config.
+// buildConfig assembles an oauth2.Config. Callers must hold mu, or be the
+// constructor.
+func (m *OAuthManager) buildConfig(clientID, clientSecret, redirectURI string) *oauth2.Config {
+	if redirectURI == "" {
+		redirectURI = m.baseURL + "/oauth/callback"
+	}
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURI,
+		Scopes:       m.scopes,
+		Endpoint:     googleoauth.Endpoint,
+	}
+}
+
+// UpdateCredentials replaces the OAuth client credentials.
 func (m *OAuthManager) UpdateCredentials(clientID, clientSecret string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateCredentialsLocked(clientID, clientSecret)
+	m.setCredentialsLocked(clientID, clientSecret)
 }
 
-// updateCredentialsLocked is the internal version that assumes the lock is held.
-func (m *OAuthManager) updateCredentialsLocked(clientID, clientSecret string) {
-	// Always use current baseURL for redirect URI
-	redirectURL := m.baseURL + "/oauth/callback"
-
-	m.config = &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		RedirectURL:  redirectURL,
-		Scopes:       m.scopes,
-		Endpoint:     google.Endpoint,
-	}
-
-	// Clear cached token since credentials changed
+func (m *OAuthManager) setCredentialsLocked(clientID, clientSecret string) {
+	m.oauthConfig = m.buildConfig(clientID, clientSecret, "")
+	// Credentials changed, so any cached access token was minted by a
+	// different client and must not be reused.
 	m.cachedToken = nil
-	m.cacheExpiry = time.Time{}
 }
 
-// UpdateBaseURL updates the base URL and rebuilds the redirect URI.
+// UpdateBaseURL updates the public base URL and the derived redirect URI.
 func (m *OAuthManager) UpdateBaseURL(baseURL string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	m.baseURL = baseURL
-	if m.config != nil {
-		m.config.RedirectURL = baseURL + "/oauth/callback"
-	}
+	m.oauthConfig = m.buildConfig(m.oauthConfig.ClientID, m.oauthConfig.ClientSecret, "")
 }
 
-// loadCredentialsFromDB attempts to load credentials from the database.
-func (m *OAuthManager) loadCredentialsFromDB() error {
-	if m.credStore == nil {
-		return fmt.Errorf("no credential store configured")
-	}
-
-	ctx := context.Background()
-	creds, err := m.credStore.Load(ctx, "google_oauth")
-	if err != nil || creds == nil || creds.Credentials == nil {
-		return fmt.Errorf("no credentials found")
-	}
-
-	oauthCreds, ok := creds.Credentials.(*notifications.GoogleOAuthCredentials)
-	if !ok || oauthCreds.ClientID == "" {
-		return fmt.Errorf("invalid credentials")
-	}
-
-	m.UpdateCredentials(oauthCreds.ClientID, oauthCreds.ClientSecret)
-	return nil
+// currentConfig returns the OAuth config, loading credentials from the store
+// on first use if the static configuration was empty.
+func (m *OAuthManager) currentConfig(ctx context.Context) (*oauth2.Config, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.currentConfigLocked(ctx)
 }
 
-// loadCredentialsFromDBLocked is the internal version that assumes the lock is held.
-func (m *OAuthManager) loadCredentialsFromDBLocked() error {
-	if m.credStore == nil {
-		return fmt.Errorf("no credential store configured")
+func (m *OAuthManager) currentConfigLocked(ctx context.Context) (*oauth2.Config, error) {
+	if m.oauthConfig.ClientID != "" && m.oauthConfig.ClientSecret != "" {
+		return m.oauthConfig, nil
 	}
 
-	ctx := context.Background()
-	creds, err := m.credStore.Load(ctx, "google_oauth")
-	if err != nil || creds == nil || creds.Credentials == nil {
-		return fmt.Errorf("no credentials found")
-	}
-
-	oauthCreds, ok := creds.Credentials.(*notifications.GoogleOAuthCredentials)
-	if !ok || oauthCreds.ClientID == "" {
-		return fmt.Errorf("invalid credentials")
-	}
-
-	m.updateCredentialsLocked(oauthCreds.ClientID, oauthCreds.ClientSecret)
-	return nil
-}
-
-// IsConfigured checks if Google OAuth is configured.
-func (m *OAuthManager) IsConfigured() bool {
-	m.mu.RLock()
-	configured := m.config != nil && m.config.ClientID != "" && m.config.ClientSecret != ""
-	m.mu.RUnlock()
-
-	if configured {
-		return true
-	}
-
-	// Try loading from DB
 	if m.credStore != nil {
-		if err := m.loadCredentialsFromDB(); err == nil {
-			m.mu.RLock()
-			configured = m.config != nil && m.config.ClientID != "" && m.config.ClientSecret != ""
-			m.mu.RUnlock()
+		clientID, clientSecret, err := m.credStore.LoadGoogleOAuth(ctx)
+		if err == nil && clientID != "" && clientSecret != "" {
+			m.setCredentialsLocked(clientID, clientSecret)
+			return m.oauthConfig, nil
 		}
 	}
-	return configured
+
+	return nil, ErrNotConfigured
 }
 
-// GetAuthURL returns the OAuth authorization URL.
-// For headless servers, the user should visit this URL in their browser.
-func (m *OAuthManager) GetAuthURL(state string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+// IsConfigured reports whether client credentials are available.
+func (m *OAuthManager) IsConfigured(ctx context.Context) bool {
+	_, err := m.currentConfig(ctx)
+	return err == nil
 }
 
-// GetAuthURLForHeadless returns authorization info for headless server setup.
-// Returns the URL and instructions for manual code entry.
-func (m *OAuthManager) GetAuthURLForHeadless(state string) HeadlessAuthInfo {
-	m.mu.RLock()
-	url := m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
-	redirectURL := m.config.RedirectURL
-	m.mu.RUnlock()
-
-	return HeadlessAuthInfo{
-		AuthURL: url,
-		State:   state,
-		Instructions: fmt.Sprintf(`
-=== Google OAuth Setup (Headless Server) ===
-
-1. Copy this URL and open it in a browser on any device:
-   %s
-
-2. Sign in with your Google account and authorize the application.
-
-3. After authorization, you will be redirected to a URL like:
-   %s?code=AUTHORIZATION_CODE&state=%s
-
-4. Copy the 'code' parameter value from the URL.
-
-5. Return to the SchedLock web UI and paste the code in the authorization field.
-
-Note: The authorization code expires after a few minutes, so complete this process promptly.
-`, url, redirectURL, state),
-	}
+// RedirectURI returns the redirect URI Google must be configured with.
+func (m *OAuthManager) RedirectURI() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.oauthConfig.RedirectURL
 }
 
-// HeadlessAuthInfo contains information for headless OAuth setup.
-type HeadlessAuthInfo struct {
-	AuthURL      string `json:"auth_url"`
-	State        string `json:"state"`
-	Instructions string `json:"instructions"`
-}
-
-// ExchangeCode exchanges an authorization code for tokens.
-func (m *OAuthManager) ExchangeCode(ctx context.Context, code string) error {
-	token, err := m.config.Exchange(ctx, code)
+// AuthCodeURL returns the URL the operator visits to authorize access.
+func (m *OAuthManager) AuthCodeURL(ctx context.Context, state string) (string, error) {
+	cfg, err := m.currentConfig(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to exchange code: %w", err)
+		return "", err
+	}
+	// AccessTypeOffline plus ApprovalForce guarantees a refresh token even when
+	// the account has authorized this client before.
+	return cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce), nil
+}
+
+// ExchangeCode trades an authorization code for tokens and stores the refresh
+// token.
+func (m *OAuthManager) ExchangeCode(ctx context.Context, code string) error {
+	cfg, err := m.currentConfig(ctx)
+	if err != nil {
+		return err
 	}
 
-	// Save token to database
+	token, err := cfg.Exchange(ctx, code)
+	if err != nil {
+		return fmt.Errorf("failed to exchange authorization code: %w", err)
+	}
+	if token.RefreshToken == "" {
+		return errors.New("google did not return a refresh token; revoke the app's access and try again")
+	}
+
 	if err := m.saveToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 
-	// Update cache
 	m.mu.Lock()
 	m.cachedToken = token
-	m.cacheExpiry = token.Expiry
 	m.mu.Unlock()
 
-	util.Info("Google OAuth token saved successfully")
+	util.Info("Google OAuth token stored")
 	return nil
 }
 
-// ExchangeCodeManual allows manual code entry for headless servers.
-func (m *OAuthManager) ExchangeCodeManual(ctx context.Context, code string) error {
-	return m.ExchangeCode(ctx, code)
+// tokenSource returns a token source backed by the stored refresh token.
+//
+// The oauth2 library refreshes lazily and caches internally; a single source is
+// reused so concurrent calendar calls share one refresh rather than each
+// minting their own access token.
+func (m *OAuthManager) tokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	m.mu.Lock()
+	cfg, err := m.currentConfigLocked(ctx)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	cached := m.cachedToken
+	m.mu.Unlock()
+
+	if cached != nil && cached.Valid() && time.Until(cached.Expiry) > refreshLeeway {
+		return oauth2.StaticTokenSource(cached), nil
+	}
+
+	stored, err := m.loadToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &persistingTokenSource{
+		manager: m,
+		source:  cfg.TokenSource(ctx, stored),
+		refresh: stored.RefreshToken,
+	}, nil
 }
 
-// GetValidToken returns a valid OAuth token, refreshing if necessary.
-func (m *OAuthManager) GetValidToken(ctx context.Context) (*oauth2.Token, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// persistingTokenSource writes rotated refresh tokens back to storage.
+//
+// Google may hand back a new refresh token during a refresh; dropping it would
+// leave the stored credential stale and eventually break calendar access.
+type persistingTokenSource struct {
+	manager *OAuthManager
+	source  oauth2.TokenSource
+	refresh string
+}
 
-	// Check cache first
-	if m.cachedToken != nil && time.Now().Add(5*time.Minute).Before(m.cacheExpiry) {
-		return m.cachedToken, nil
-	}
-
-	// Load token from database
-	token, err := m.loadToken(ctx)
+func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
+	token, err := p.source.Token()
 	if err != nil {
-		return nil, fmt.Errorf("no OAuth token configured: %w", err)
+		util.Error("OAuth token refresh failed", "error", err)
+		return nil, fmt.Errorf("token refresh failed: %w", err)
 	}
 
-	// Check if token needs refresh (5-minute buffer)
-	if token.Expiry.Before(time.Now().Add(5 * time.Minute)) {
-		util.Info("Access token expired or expiring, refreshing...")
-
-		// Ensure credentials are loaded before refresh
-		if m.config.ClientID == "" && m.credStore != nil {
-			util.Debug("ClientID empty, attempting to load from credential store")
-			if err := m.loadCredentialsFromDBLocked(); err != nil {
-				util.Warn("Failed to load credentials from DB", "error", err)
-			}
-		}
-
-		newToken, err := m.refreshToken(ctx, token)
-		if err != nil {
-			// Log the failure - this is critical
-			util.Error("OAuth token refresh failed", "error", err)
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
-		if newToken.RefreshToken == "" {
-			newToken.RefreshToken = token.RefreshToken
-		}
-
-		// Save the new token (Google may rotate refresh token)
-		if err := m.saveToken(ctx, newToken); err != nil {
-			util.Error("Failed to save refreshed token", "error", err)
-			// Continue anyway - we have a valid token in memory
-		}
-
-		token = newToken
-		util.Info("OAuth token refreshed successfully")
+	if token.RefreshToken == "" {
+		token.RefreshToken = p.refresh
 	}
 
-	// Update cache
-	m.cachedToken = token
-	m.cacheExpiry = token.Expiry
+	p.manager.mu.Lock()
+	p.manager.cachedToken = token
+	p.manager.mu.Unlock()
+
+	if token.RefreshToken != p.refresh {
+		if err := p.manager.saveToken(context.Background(), token); err != nil {
+			util.Error("Failed to persist rotated refresh token", "error", err)
+		} else {
+			p.refresh = token.RefreshToken
+		}
+	}
 
 	return token, nil
 }
 
-// refreshToken refreshes an expired token.
-func (m *OAuthManager) refreshToken(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
-	// Debug: log OAuth config state
-	util.Debug("Token refresh attempt",
-		"client_id_set", m.config.ClientID != "",
-		"client_secret_set", m.config.ClientSecret != "",
-		"redirect_url", m.config.RedirectURL,
-	)
-
-	tokenSource := m.config.TokenSource(ctx, token)
-	return tokenSource.Token()
+// Client returns an HTTP client that authenticates as the connected account.
+func (m *OAuthManager) Client(ctx context.Context) (*http.Client, error) {
+	source, err := m.tokenSource(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return oauth2.NewClient(ctx, source), nil
 }
 
-// saveToken saves a token to the database (encrypted).
+// saveToken stores the refresh token, encrypted.
 func (m *OAuthManager) saveToken(ctx context.Context, token *oauth2.Token) error {
-	// Only store the refresh token (access tokens are ephemeral)
 	if token.RefreshToken == "" {
-		return fmt.Errorf("no refresh token to save")
+		return errors.New("no refresh token to save")
 	}
 
-	// Encrypt the refresh token
-	encryptedToken, err := m.encryptor.Encrypt(token.RefreshToken)
+	encrypted, err := m.encryptor.Encrypt(token.RefreshToken)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt token: %w", err)
 	}
 
-	// Store scopes as space-separated string
 	scopes := ""
-	if extra := token.Extra("scope"); extra != nil {
-		if s, ok := extra.(string); ok {
-			scopes = s
-		}
+	if raw, ok := token.Extra("scope").(string); ok {
+		scopes = raw
 	}
 
-	// Upsert into database
+	// An empty scope string during a refresh must not erase what was recorded
+	// at authorization time.
 	_, err = m.db.ExecContext(ctx, `
 		INSERT INTO oauth_tokens (id, refresh_token_enc, scopes, updated_at)
-		VALUES ('primary', ?, ?, datetime('now'))
+		VALUES ('primary', ?, NULLIF(?, ''), datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
 			refresh_token_enc = excluded.refresh_token_enc,
-			scopes = excluded.scopes,
+			scopes = COALESCE(excluded.scopes, oauth_tokens.scopes),
 			updated_at = datetime('now')
-	`, encryptedToken, scopes)
-
+	`, encrypted, scopes)
 	return err
 }
 
-// loadToken loads a token from the database.
+// loadToken reads and decrypts the stored refresh token.
 func (m *OAuthManager) loadToken(ctx context.Context) (*oauth2.Token, error) {
-	var (
-		encryptedToken []byte
-		scopes         sql.NullString
-	)
-
+	var encrypted []byte
 	err := m.db.QueryRowContext(ctx, `
-		SELECT refresh_token_enc, scopes
-		FROM oauth_tokens
-		WHERE id = 'primary'
-	`).Scan(&encryptedToken, &scopes)
+		SELECT refresh_token_enc FROM oauth_tokens WHERE id = 'primary'
+	`).Scan(&encrypted)
 
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no OAuth token configured")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoToken
 	}
 	if err != nil {
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Decrypt the refresh token
-	refreshToken, err := m.encryptor.Decrypt(encryptedToken)
+	refreshToken, err := m.encryptor.Decrypt(encrypted)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt token: %w", err)
+		return nil, fmt.Errorf("failed to decrypt stored token: %w", err)
 	}
 
-	// Create a token (will be refreshed to get access token)
-	token := &oauth2.Token{
+	// The expiry is set in the past so the first use always refreshes, which is
+	// also how a fresh access token is obtained after a restart.
+	return &oauth2.Token{
 		RefreshToken: refreshToken,
-		// Set expiry in the past to force refresh
-		Expiry: time.Now().Add(-1 * time.Hour),
-	}
-
-	return token, nil
+		Expiry:       time.Now().Add(-time.Hour),
+	}, nil
 }
 
-// HasToken checks if an OAuth token is configured.
+// HasToken reports whether Google Calendar has been connected.
 func (m *OAuthManager) HasToken(ctx context.Context) bool {
 	var count int
-	err := m.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM oauth_tokens WHERE id = 'primary'
-	`).Scan(&count)
-
+	err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_tokens WHERE id = 'primary'`).Scan(&count)
 	return err == nil && count > 0
 }
 
-// IsAuthenticated checks if OAuth is configured with a valid token.
-// This is a convenience wrapper around HasToken that uses a background context.
-func (m *OAuthManager) IsAuthenticated() bool {
-	return m.HasToken(context.Background())
-}
-
-// DeleteToken removes the stored OAuth token.
+// DeleteToken disconnects the calendar account.
 func (m *OAuthManager) DeleteToken(ctx context.Context) error {
 	m.mu.Lock()
 	m.cachedToken = nil
-	m.cacheExpiry = time.Time{}
 	m.mu.Unlock()
 
 	_, err := m.db.ExecContext(ctx, `DELETE FROM oauth_tokens WHERE id = 'primary'`)
 	return err
 }
 
-// GetClient returns an HTTP client configured with OAuth credentials.
-func (m *OAuthManager) GetClient(ctx context.Context) (*http.Client, error) {
-	token, err := m.GetValidToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return m.config.Client(ctx, token), nil
-}
-
-// OAuthState generates and stores a state parameter for OAuth.
-type OAuthState struct {
+// oauthState is the stored CSRF state for an in-flight authorization.
+type oauthState struct {
 	State     string    `json:"state"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// GenerateOAuthState creates a new OAuth state token.
+// GenerateOAuthState creates an unguessable state parameter.
 func GenerateOAuthState() (string, error) {
-	state, err := crypto.GenerateSessionID()
-	if err != nil {
-		return "", err
-	}
-	return state, nil
+	return crypto.GenerateSessionID()
 }
 
-// StoreOAuthState stores the OAuth state in the database settings.
+// StoreOAuthState records the state expected on the callback.
 func (m *OAuthManager) StoreOAuthState(ctx context.Context, state string) error {
-	stateData := OAuthState{
+	data, err := json.Marshal(oauthState{
 		State:     state,
-		ExpiresAt: time.Now().Add(10 * time.Minute),
-	}
-
-	data, err := json.Marshal(stateData)
+		ExpiresAt: time.Now().Add(oauthStateTimeout),
+	})
 	if err != nil {
 		return err
 	}
@@ -439,39 +362,37 @@ func (m *OAuthManager) StoreOAuthState(ctx context.Context, state string) error 
 		VALUES ('oauth_state', ?, datetime('now'))
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
 	`, string(data))
-
 	return err
 }
 
-// ValidateOAuthState validates and consumes an OAuth state token.
+// ValidateOAuthState checks and consumes the stored state, so an authorization
+// code cannot be replayed and a forged callback cannot bind an attacker's
+// account.
 func (m *OAuthManager) ValidateOAuthState(ctx context.Context, state string) error {
-	var valueStr string
-	err := m.db.QueryRowContext(ctx, `
-		SELECT value FROM settings WHERE key = 'oauth_state'
-	`).Scan(&valueStr)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("no OAuth state found")
+	var raw string
+	err := m.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'oauth_state'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrStateNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
 	}
 
-	var stateData OAuthState
-	if err := json.Unmarshal([]byte(valueStr), &stateData); err != nil {
-		return fmt.Errorf("invalid state data: %w", err)
+	var stored oauthState
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return fmt.Errorf("invalid stored state: %w", err)
 	}
 
-	if stateData.State != state {
-		return fmt.Errorf("state mismatch")
+	// The state is single-use whatever the outcome.
+	if _, err := m.db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'oauth_state'`); err != nil {
+		util.Warn("Failed to clear OAuth state", "error", err)
 	}
 
-	if time.Now().After(stateData.ExpiresAt) {
-		return fmt.Errorf("state expired")
+	if subtle.ConstantTimeCompare([]byte(stored.State), []byte(state)) != 1 {
+		return ErrStateMismatch
 	}
-
-	// Delete the state (single-use)
-	m.db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'oauth_state'`)
-
+	if time.Now().After(stored.ExpiresAt) {
+		return ErrStateExpired
+	}
 	return nil
 }

@@ -1,13 +1,12 @@
-// Package web provides web UI handlers and session management.
 package web
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/hex"
+	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/config"
@@ -19,20 +18,13 @@ import (
 const (
 	sessionCookieName = "schedlock_session"
 	csrfCookieName    = "schedlock_csrf"
+
+	// csrfCookieLifetime bounds a pre-session CSRF token, which only needs to
+	// survive filling in the login form.
+	csrfCookieLifetime = time.Hour
 )
 
-// SessionManager handles web UI sessions.
-type SessionManager struct {
-	db     *database.DB
-	config *config.AuthConfig
-}
-
-// NewSessionManager creates a new session manager.
-func NewSessionManager(db *database.DB, cfg *config.AuthConfig) *SessionManager {
-	return &SessionManager{db: db, config: cfg}
-}
-
-// Session represents a web UI session.
+// Session is an authenticated web session.
 type Session struct {
 	ID        string
 	UserID    string
@@ -43,9 +35,20 @@ type Session struct {
 	CSRFToken string
 }
 
-// CreateSession creates a new session for a user.
+// SessionManager creates and validates web sessions.
+type SessionManager struct {
+	db     *database.DB
+	config *config.AuthConfig
+}
+
+// NewSessionManager creates a session manager.
+func NewSessionManager(db *database.DB, cfg *config.AuthConfig) *SessionManager {
+	return &SessionManager{db: db, config: cfg}
+}
+
+// CreateSession issues a new session.
 func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, userAgent string) (*Session, error) {
-	sessionID, err := generateSessionID()
+	sessionID, err := schedcrypto.GenerateSessionID()
 	if err != nil {
 		return nil, err
 	}
@@ -55,14 +58,12 @@ func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, u
 		return nil, err
 	}
 
-	expiresAt := time.Now().Add(m.sessionDuration())
+	expiresAt := time.Now().Add(m.SessionDuration())
 
-	_, err = m.db.ExecContext(ctx, `
+	if _, err := m.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, ip_address, user_agent, expires_at, csrf_token, last_activity)
-		VALUES (?, ?, ?, ?, ?, datetime('now'))
-	`, sessionID, ipAddress, userAgent, util.SQLiteTimestamp(expiresAt), csrfToken)
-
-	if err != nil {
+		VALUES (?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, datetime('now'))
+	`, sessionID, ipAddress, userAgent, util.SQLiteTimestamp(expiresAt), csrfToken); err != nil {
 		return nil, err
 	}
 
@@ -77,29 +78,42 @@ func (m *SessionManager) CreateSession(ctx context.Context, userID, ipAddress, u
 	}, nil
 }
 
-// ValidateSession checks if a session is valid.
+// ValidateSession loads an unexpired session, or (nil, nil) if there is none.
 func (m *SessionManager) ValidateSession(ctx context.Context, sessionID string) (*Session, error) {
-	var session Session
-	var createdAt, expiresAt string
-	var csrfToken string
+	if sessionID == "" {
+		return nil, nil
+	}
+
+	var (
+		session   Session
+		createdAt sql.NullString
+		expiresAt sql.NullString
+		ipAddress sql.NullString
+		userAgent sql.NullString
+	)
 
 	err := m.db.QueryRowContext(ctx, `
 		SELECT id, ip_address, user_agent, created_at, expires_at, csrf_token
 		FROM sessions
 		WHERE id = ? AND expires_at > datetime('now')
-	`, sessionID).Scan(&session.ID, &session.IPAddress, &session.UserAgent, &createdAt, &expiresAt, &csrfToken)
+	`, sessionID).Scan(&session.ID, &ipAddress, &userAgent, &createdAt, &expiresAt, &session.CSRFToken)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	session.CreatedAt, _ = util.ParseSQLiteTimestamp(createdAt)
-	session.ExpiresAt, _ = util.ParseSQLiteTimestamp(expiresAt)
+	session.IPAddress = ipAddress.String
+	session.UserAgent = userAgent.String
+	if ts := database.NullTimeText(createdAt); ts.Valid {
+		session.CreatedAt = ts.Time
+	}
+	if ts := database.NullTimeText(expiresAt); ts.Valid {
+		session.ExpiresAt = ts.Time
+	}
 	session.UserID = "admin"
-	session.CSRFToken = csrfToken
 
 	return &session, nil
 }
@@ -110,28 +124,114 @@ func (m *SessionManager) DeleteSession(ctx context.Context, sessionID string) er
 	return err
 }
 
-// RefreshSession extends a session's expiration.
+// RefreshSession extends a session's lifetime.
 func (m *SessionManager) RefreshSession(ctx context.Context, sessionID string) error {
-	expiresAt := time.Now().Add(m.sessionDuration())
 	_, err := m.db.ExecContext(ctx, `
 		UPDATE sessions SET expires_at = ?, last_activity = datetime('now') WHERE id = ?
-	`, util.SQLiteTimestamp(expiresAt), sessionID)
+	`, util.SQLiteTimestamp(time.Now().Add(m.SessionDuration())), sessionID)
 	return err
 }
 
-// VerifyPassword checks if a password matches the admin password.
+// VerifyPassword checks a submitted admin password.
 func (m *SessionManager) VerifyPassword(password string) bool {
 	if m.config.AdminPasswordHash != "" {
 		ok, err := schedcrypto.VerifyPassword(password, m.config.AdminPasswordHash)
-		return err == nil && ok
+		if err != nil {
+			util.Error("Stored admin password hash is unusable", "error", err)
+			return false
+		}
+		return ok
 	}
+
 	if m.config.AdminPassword == "" {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(password), []byte(m.config.AdminPassword)) == 1
 }
 
-// SetSessionCookie sets the session cookie on the response.
+// SessionDuration is how long a new session lasts.
+func (m *SessionManager) SessionDuration() time.Duration {
+	if m.config.SessionDuration <= 0 {
+		return 24 * time.Hour
+	}
+	return m.config.SessionDuration
+}
+
+// RequireSession rejects unauthenticated requests, redirecting to the login
+// page with the original destination preserved.
+func (m *SessionManager) RequireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, err := m.ValidateSession(r.Context(), sessionIDFrom(r))
+		if err != nil {
+			util.Error("Failed to validate session", "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if session == nil {
+			ClearSessionCookie(w)
+			redirectToLogin(w, r)
+			return
+		}
+
+		if m.config.SessionRefresh {
+			if err := m.RefreshSession(r.Context(), session.ID); err != nil {
+				util.Warn("Failed to refresh session", "error", err)
+			}
+		}
+
+		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), session)))
+	})
+}
+
+// redirectToLogin sends an unauthenticated visitor to the login page.
+func redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	target := "/login"
+	if r.Method == http.MethodGet {
+		if next := SafeRedirect(r.URL.RequestURI(), ""); next != "" {
+			target += "?redirect=" + url.QueryEscape(next)
+		}
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// CSRFProtection validates the CSRF token on every state-changing request.
+//
+// The submitted token is compared against the value stored with the session,
+// not merely against a cookie. A cookie-only comparison can be defeated by
+// anything able to write a cookie for this site, such as a compromised
+// neighbouring subdomain; the session-bound token cannot.
+func CSRFProtection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		submitted := submittedCSRFToken(r)
+		expected := ""
+		if session := SessionFrom(r.Context()); session != nil {
+			expected = session.CSRFToken
+		} else {
+			expected = csrfCookieValue(r)
+		}
+
+		if expected == "" || submitted == "" ||
+			subtle.ConstantTimeCompare([]byte(submitted), []byte(expected)) != 1 {
+			http.Error(w, "Invalid or missing CSRF token", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// GenerateCSRFToken creates a CSRF token.
+func GenerateCSRFToken() (string, error) {
+	return schedcrypto.GenerateCSRFToken()
+}
+
+// SetSessionCookie stores the session cookie.
 func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool, duration time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -139,7 +239,9 @@ func SetSessionCookie(w http.ResponseWriter, sessionID string, secure bool, dura
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode, // Lax allows OAuth redirects while still protecting against CSRF
+		// Lax rather than Strict: the OAuth provider redirects back to this
+		// site, and a Strict cookie would not be sent on that navigation.
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(duration.Seconds()),
 	})
 }
@@ -151,12 +253,25 @@ func ClearSessionCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
 
-// GetSessionID retrieves the session ID from the request cookie.
-func GetSessionID(r *http.Request) string {
+// SetCSRFCookie stores the CSRF cookie used before a session exists.
+func SetCSRFCookie(w http.ResponseWriter, token string, secure bool, duration time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(duration.Seconds()),
+	})
+}
+
+func sessionIDFrom(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return ""
@@ -164,45 +279,7 @@ func GetSessionID(r *http.Request) string {
 	return cookie.Value
 }
 
-// CSRF token management
-
-// GenerateCSRFToken creates a new CSRF token.
-func GenerateCSRFToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
-// SetCSRFCookie sets the CSRF cookie on the response.
-func SetCSRFCookie(w http.ResponseWriter, token string, secure bool, duration time.Duration) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: false, // JS needs to read this
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode, // Lax allows OAuth redirects
-		MaxAge:   int(duration.Seconds()),
-	})
-}
-
-// GetCSRFToken retrieves the CSRF token from the request.
-func GetCSRFToken(r *http.Request) string {
-	// Check header first (for AJAX)
-	if token := r.Header.Get("X-CSRF-Token"); token != "" {
-		return token
-	}
-	// Check form field
-	if token := r.FormValue("csrf_token"); token != "" {
-		return token
-	}
-	return ""
-}
-
-// GetCSRFCookie retrieves the CSRF cookie value.
-func GetCSRFCookie(r *http.Request) string {
+func csrfCookieValue(r *http.Request) string {
 	cookie, err := r.Cookie(csrfCookieName)
 	if err != nil {
 		return ""
@@ -210,84 +287,25 @@ func GetCSRFCookie(r *http.Request) string {
 	return cookie.Value
 }
 
-// ValidateCSRF checks if the CSRF token matches.
-func ValidateCSRF(r *http.Request) bool {
-	cookie := GetCSRFCookie(r)
-	token := GetCSRFToken(r)
-	return cookie != "" && token != "" && cookie == token
-}
-
-// generateSessionID creates a random session ID.
-func generateSessionID() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
+func submittedCSRFToken(r *http.Request) string {
+	if token := r.Header.Get("X-CSRF-Token"); token != "" {
+		return token
 	}
-	return hex.EncodeToString(bytes), nil
+	return r.FormValue("csrf_token")
 }
 
-// Context key for session
+// contextKey is unexported so no other package can collide with it.
 type contextKey string
 
 const sessionContextKey contextKey = "session"
 
-// WithSession adds a session to the context.
+// WithSession attaches a session to a context.
 func WithSession(ctx context.Context, session *Session) context.Context {
 	return context.WithValue(ctx, sessionContextKey, session)
 }
 
-// GetSession retrieves the session from the context.
-func GetSession(ctx context.Context) *Session {
-	session, ok := ctx.Value(sessionContextKey).(*Session)
-	if !ok {
-		return nil
-	}
+// SessionFrom retrieves the session from a context, or nil.
+func SessionFrom(ctx context.Context) *Session {
+	session, _ := ctx.Value(sessionContextKey).(*Session)
 	return session
-}
-
-// RequireSession middleware ensures a valid session exists.
-func (m *SessionManager) RequireSession(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionID := GetSessionID(r)
-		if sessionID == "" {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-
-		session, err := m.ValidateSession(r.Context(), sessionID)
-		if err != nil || session == nil {
-			ClearSessionCookie(w)
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-
-		// Refresh session
-		if m.config.SessionRefresh {
-			m.RefreshSession(r.Context(), sessionID)
-		}
-
-		// Add session to context
-		ctx := WithSession(r.Context(), session)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func (m *SessionManager) sessionDuration() time.Duration {
-	if m.config.SessionDuration <= 0 {
-		return 24 * time.Hour
-	}
-	return m.config.SessionDuration
-}
-
-// CSRFProtection middleware ensures CSRF token is valid for POST requests.
-func CSRFProtection(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
-			if !ValidateCSRF(r) {
-				http.Error(w, "CSRF token invalid", http.StatusForbidden)
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
 }

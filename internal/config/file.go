@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -9,204 +12,225 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fileDuration accepts either a duration string ("30s") or a plain number of
+// seconds, so a hand-written config file is forgiving about both.
 type fileDuration time.Duration
 
 func (d *fileDuration) UnmarshalYAML(value *yaml.Node) error {
 	if value == nil {
 		return nil
 	}
-	switch value.Kind {
-	case yaml.ScalarNode:
-		if value.Tag == "!!int" {
-			var seconds int64
-			if err := value.Decode(&seconds); err != nil {
-				return err
-			}
-			*d = fileDuration(time.Duration(seconds) * time.Second)
-			return nil
-		}
-		var raw string
-		if err := value.Decode(&raw); err != nil {
+	if value.Kind != yaml.ScalarNode {
+		return errors.New("a duration must be a scalar value")
+	}
+
+	if value.Tag == "!!int" {
+		var seconds int64
+		if err := value.Decode(&seconds); err != nil {
 			return err
 		}
-		parsed, err := time.ParseDuration(raw)
-		if err != nil {
-			return fmt.Errorf("invalid duration %q: %w", raw, err)
-		}
-		*d = fileDuration(parsed)
+		*d = fileDuration(time.Duration(seconds) * time.Second)
 		return nil
-	default:
-		return fmt.Errorf("invalid duration type")
 	}
+
+	var raw string
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", raw, err)
+	}
+	*d = fileDuration(parsed)
+	return nil
 }
 
+func (d fileDuration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
+// ConfigFile mirrors Config with pointer fields, so an absent key is
+// distinguishable from a zero value and leaves the default in place.
 type ConfigFile struct {
-	Server        *ServerConfigFile        `yaml:"server"`
-	Database      *DatabaseConfigFile      `yaml:"database"`
-	Google        *GoogleConfigFile        `yaml:"google"`
-	Approval      *ApprovalConfigFile      `yaml:"approval"`
-	RateLimits    *RateLimitsConfigFile    `yaml:"rate_limits"`
-	Retry         *RetryConfigFile         `yaml:"retry"`
-	Notifications *NotificationsConfigFile `yaml:"notifications"`
-	Moltbot       *MoltbotConfigFile       `yaml:"moltbot"`
-	Auth          *AuthConfigFile          `yaml:"auth"`
-	Logging       *LoggingConfigFile       `yaml:"logging"`
-	Display       *DisplayConfigFile       `yaml:"display"`
-	Retention     *RetentionConfigFile     `yaml:"retention"`
+	Server        *ServerConfigFile        `yaml:"server,omitempty"`
+	Database      *DatabaseConfigFile      `yaml:"database,omitempty"`
+	Google        *GoogleConfigFile        `yaml:"google,omitempty"`
+	Approval      *ApprovalConfigFile      `yaml:"approval,omitempty"`
+	RateLimits    *RateLimitsConfigFile    `yaml:"rate_limits,omitempty"`
+	Retry         *RetryConfigFile         `yaml:"retry,omitempty"`
+	Notifications *NotificationsConfigFile `yaml:"notifications,omitempty"`
+	Moltbot       *MoltbotConfigFile       `yaml:"moltbot,omitempty"`
+	Auth          *AuthConfigFile          `yaml:"auth,omitempty"`
+	Logging       *LoggingConfigFile       `yaml:"logging,omitempty"`
+	Display       *DisplayConfigFile       `yaml:"display,omitempty"`
+	Retention     *RetentionConfigFile     `yaml:"retention,omitempty"`
 }
 
 type ServerConfigFile struct {
-	Host         *string       `yaml:"host"`
-	Port         *int          `yaml:"port"`
-	BaseURL      *string       `yaml:"base_url"`
-	ReadTimeout  *fileDuration `yaml:"read_timeout"`
-	WriteTimeout *fileDuration `yaml:"write_timeout"`
+	Host           *string       `yaml:"host,omitempty"`
+	Port           *int          `yaml:"port,omitempty"`
+	BaseURL        *string       `yaml:"base_url,omitempty"`
+	ReadTimeout    *fileDuration `yaml:"read_timeout,omitempty"`
+	WriteTimeout   *fileDuration `yaml:"write_timeout,omitempty"`
+	IdleTimeout    *fileDuration `yaml:"idle_timeout,omitempty"`
+	TrustedProxies *[]string     `yaml:"trusted_proxies,omitempty"`
 }
 
 type DatabaseConfigFile struct {
-	Path          *string `yaml:"path"`
-	WALMode       *bool   `yaml:"wal_mode"`
-	BusyTimeoutMs *int    `yaml:"busy_timeout_ms"`
+	Path *string `yaml:"path,omitempty"`
 }
 
 type GoogleConfigFile struct {
-	ClientID     *string   `yaml:"client_id"`
-	ClientSecret *string   `yaml:"client_secret"`
-	RedirectURI  *string   `yaml:"redirect_uri"`
-	Scopes       *[]string `yaml:"scopes"`
+	ClientID     *string   `yaml:"client_id,omitempty"`
+	ClientSecret *string   `yaml:"client_secret,omitempty"`
+	RedirectURI  *string   `yaml:"redirect_uri,omitempty"`
+	Scopes       *[]string `yaml:"scopes,omitempty"`
 }
 
 type ApprovalConfigFile struct {
-	TimeoutMinutes *int    `yaml:"timeout_minutes"`
-	DefaultAction  *string `yaml:"default_action"`
+	TimeoutMinutes *int    `yaml:"timeout_minutes,omitempty"`
+	DefaultAction  *string `yaml:"default_action,omitempty"`
 }
 
 type TierLimitFile struct {
-	RequestsPerMinute *int `yaml:"requests_per_minute"`
-	Burst             *int `yaml:"burst"`
+	RequestsPerMinute *int `yaml:"requests_per_minute,omitempty"`
+	Burst             *int `yaml:"burst,omitempty"`
 }
 
 type RateLimitsConfigFile struct {
-	Read  *TierLimitFile `yaml:"read"`
-	Write *TierLimitFile `yaml:"write"`
-	Admin *TierLimitFile `yaml:"admin"`
+	Read  *TierLimitFile `yaml:"read,omitempty"`
+	Write *TierLimitFile `yaml:"write,omitempty"`
+	Admin *TierLimitFile `yaml:"admin,omitempty"`
 }
 
 type RetryConfigFile struct {
-	Enabled              *bool  `yaml:"enabled"`
-	MaxAttempts          *int   `yaml:"max_attempts"`
-	BackoffSeconds       *[]int `yaml:"backoff_seconds"`
-	RetryableStatusCodes *[]int `yaml:"retryable_status_codes"`
+	Enabled              *bool  `yaml:"enabled,omitempty"`
+	MaxAttempts          *int   `yaml:"max_attempts,omitempty"`
+	BackoffSeconds       *[]int `yaml:"backoff_seconds,omitempty"`
+	RetryableStatusCodes *[]int `yaml:"retryable_status_codes,omitempty"`
 }
 
 type NtfyConfigFile struct {
-	Enabled        *bool   `yaml:"enabled"`
-	Server         *string `yaml:"server"`
-	Topic          *string `yaml:"topic"`
-	Token          *string `yaml:"token"`
-	Priority       *string `yaml:"priority"`
-	MinimalContent *bool   `yaml:"minimal_content"`
+	Enabled        *bool   `yaml:"enabled,omitempty"`
+	Server         *string `yaml:"server,omitempty"`
+	Topic          *string `yaml:"topic,omitempty"`
+	Token          *string `yaml:"token,omitempty"`
+	Priority       *string `yaml:"priority,omitempty"`
+	MinimalContent *bool   `yaml:"minimal_content,omitempty"`
 }
 
 type PushoverConfigFile struct {
-	Enabled  *bool   `yaml:"enabled"`
-	AppToken *string `yaml:"app_token"`
-	UserKey  *string `yaml:"user_key"`
-	Priority *int    `yaml:"priority"`
-	Sound    *string `yaml:"sound"`
+	Enabled  *bool   `yaml:"enabled,omitempty"`
+	AppToken *string `yaml:"app_token,omitempty"`
+	UserKey  *string `yaml:"user_key,omitempty"`
+	Priority *int    `yaml:"priority,omitempty"`
+	Sound    *string `yaml:"sound,omitempty"`
 }
 
 type TelegramConfigFile struct {
-	Enabled             *bool   `yaml:"enabled"`
-	BotToken            *string `yaml:"bot_token"`
-	ChatID              *string `yaml:"chat_id"`
-	WebhookSecret       *string `yaml:"webhook_secret"`
-	WebhookPath         *string `yaml:"webhook_path"`
-	AutoRegisterWebhook *bool   `yaml:"auto_register_webhook"`
+	Enabled             *bool   `yaml:"enabled,omitempty"`
+	BotToken            *string `yaml:"bot_token,omitempty"`
+	ChatID              *string `yaml:"chat_id,omitempty"`
+	WebhookSecret       *string `yaml:"webhook_secret,omitempty"`
+	WebhookPath         *string `yaml:"webhook_path,omitempty"`
+	AutoRegisterWebhook *bool   `yaml:"auto_register_webhook,omitempty"`
+}
+
+// GenericWebhookConfigFile configures the generic webhook provider, which had
+// no representation in the config file before and could therefore only be
+// enabled through the environment or the web UI.
+type GenericWebhookConfigFile struct {
+	Enabled        *bool   `yaml:"enabled,omitempty"`
+	URL            *string `yaml:"url,omitempty"`
+	Secret         *string `yaml:"secret,omitempty"`
+	TimeoutSeconds *int    `yaml:"timeout_seconds,omitempty"`
 }
 
 type NotificationsConfigFile struct {
-	Ntfy     *NtfyConfigFile     `yaml:"ntfy"`
-	Pushover *PushoverConfigFile `yaml:"pushover"`
-	Telegram *TelegramConfigFile `yaml:"telegram"`
+	Ntfy     *NtfyConfigFile           `yaml:"ntfy,omitempty"`
+	Pushover *PushoverConfigFile       `yaml:"pushover,omitempty"`
+	Telegram *TelegramConfigFile       `yaml:"telegram,omitempty"`
+	Webhook  *GenericWebhookConfigFile `yaml:"webhook,omitempty"`
 }
 
 type WebhookConfigFile struct {
-	Enabled          *bool     `yaml:"enabled"`
-	URL              *string   `yaml:"url"`
-	Token            *string   `yaml:"token"`
-	SessionKeyPrefix *string   `yaml:"session_key_prefix"`
-	TimeoutSeconds   *int      `yaml:"timeout_seconds"`
-	MaxRetries       *int      `yaml:"max_retries"`
-	RetryBackoff     *[]int    `yaml:"retry_backoff"`
-	NotifyOn         *[]string `yaml:"notify_on"`
+	Enabled          *bool     `yaml:"enabled,omitempty"`
+	URL              *string   `yaml:"url,omitempty"`
+	Token            *string   `yaml:"token,omitempty"`
+	SessionKeyPrefix *string   `yaml:"session_key_prefix,omitempty"`
+	TimeoutSeconds   *int      `yaml:"timeout_seconds,omitempty"`
+	MaxRetries       *int      `yaml:"max_retries,omitempty"`
+	RetryBackoff     *[]int    `yaml:"retry_backoff,omitempty"`
+	NotifyOn         *[]string `yaml:"notify_on,omitempty"`
 }
 
 type MoltbotConfigFile struct {
-	Webhook *WebhookConfigFile `yaml:"webhook"`
-}
-
-type CloudflareAccessConfigFile struct {
-	Enabled *bool   `yaml:"enabled"`
-	Team    *string `yaml:"team"`
-	Aud     *string `yaml:"aud"`
+	Webhook *WebhookConfigFile `yaml:"webhook,omitempty"`
 }
 
 type AuthConfigFile struct {
-	AdminPasswordHash *string                     `yaml:"admin_password_hash"`
-	AdminPassword     *string                     `yaml:"admin_password"`
-	SecretKey         *string                     `yaml:"secret_key"`
-	EncryptionKey     *string                     `yaml:"encryption_key"`
-	SessionDuration   *fileDuration               `yaml:"session_duration"`
-	SessionRefresh    *bool                       `yaml:"session_refresh"`
-	CloudflareAccess  *CloudflareAccessConfigFile `yaml:"cloudflare_access"`
+	AdminPasswordHash *string       `yaml:"admin_password_hash,omitempty"`
+	AdminPassword     *string       `yaml:"admin_password,omitempty"`
+	SecretKey         *string       `yaml:"secret_key,omitempty"`
+	EncryptionKey     *string       `yaml:"encryption_key,omitempty"`
+	SessionDuration   *fileDuration `yaml:"session_duration,omitempty"`
+	SessionRefresh    *bool         `yaml:"session_refresh,omitempty"`
 }
 
 type LoggingConfigFile struct {
-	Level         *string `yaml:"level"`
-	Format        *string `yaml:"format"`
-	IncludeCaller *bool   `yaml:"include_caller"`
+	Level  *string `yaml:"level,omitempty"`
+	Format *string `yaml:"format,omitempty"`
 }
 
 type DisplayConfigFile struct {
-	Timezone       *string `yaml:"timezone"`
-	DateFormat     *string `yaml:"date_format"`
-	TimeFormat     *string `yaml:"time_format"`
-	DatetimeFormat *string `yaml:"datetime_format"`
+	Timezone       *string `yaml:"timezone,omitempty"`
+	DateFormat     *string `yaml:"date_format,omitempty"`
+	TimeFormat     *string `yaml:"time_format,omitempty"`
+	DatetimeFormat *string `yaml:"datetime_format,omitempty"`
 }
 
 type RetentionConfigFile struct {
-	Enabled               *bool   `yaml:"enabled"`
-	CompletedRequestsDays *int    `yaml:"completed_requests_days"`
-	AuditLogDays          *int    `yaml:"audit_log_days"`
-	WebhookFailuresDays   *int    `yaml:"webhook_failures_days"`
-	VacuumSchedule        *string `yaml:"vacuum_schedule"`
+	Enabled               *bool `yaml:"enabled,omitempty"`
+	CompletedRequestsDays *int  `yaml:"completed_requests_days,omitempty"`
+	AuditLogDays          *int  `yaml:"audit_log_days,omitempty"`
+	WebhookFailuresDays   *int  `yaml:"webhook_failures_days,omitempty"`
 }
 
+// loadConfigFile reads and applies a config file if one exists.
 func loadConfigFile(cfg *Config, path string) error {
 	if path == "" {
 		return nil
 	}
 
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
-	data, err := os.ReadFile(path)
+	file, err := parseConfigFile(data)
 	if err != nil {
 		return err
 	}
 
-	var file ConfigFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	applyConfigFile(cfg, &file)
+	applyConfigFile(cfg, file)
 	return nil
+}
+
+// parseConfigFile decodes a config document, rejecting unknown keys so a typo
+// is reported rather than silently ignored.
+func parseConfigFile(data []byte) (*ConfigFile, error) {
+	var file ConfigFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+
+	// An empty document decodes to io.EOF, which is not an error here.
+	if err := decoder.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	return &file, nil
 }
 
 func applyConfigFile(cfg *Config, file *ConfigFile) {
@@ -214,279 +238,193 @@ func applyConfigFile(cfg *Config, file *ConfigFile) {
 		return
 	}
 
-	if file.Server != nil {
-		if file.Server.Host != nil {
-			cfg.Server.Host = *file.Server.Host
-		}
-		if file.Server.Port != nil {
-			cfg.Server.Port = *file.Server.Port
-		}
-		if file.Server.BaseURL != nil {
-			cfg.Server.BaseURL = *file.Server.BaseURL
-		}
-		if file.Server.ReadTimeout != nil {
-			cfg.Server.ReadTimeout = time.Duration(*file.Server.ReadTimeout)
-		}
-		if file.Server.WriteTimeout != nil {
-			cfg.Server.WriteTimeout = time.Duration(*file.Server.WriteTimeout)
-		}
+	if f := file.Server; f != nil {
+		setString(&cfg.Server.Host, f.Host)
+		setInt(&cfg.Server.Port, f.Port)
+		setString(&cfg.Server.BaseURL, f.BaseURL)
+		setDuration(&cfg.Server.ReadTimeout, f.ReadTimeout)
+		setDuration(&cfg.Server.WriteTimeout, f.WriteTimeout)
+		setDuration(&cfg.Server.IdleTimeout, f.IdleTimeout)
+		setStrings(&cfg.Server.TrustedProxies, f.TrustedProxies)
 	}
 
-	if file.Database != nil {
-		if file.Database.Path != nil {
-			cfg.Database.Path = filepath.Clean(*file.Database.Path)
-		}
-		if file.Database.WALMode != nil {
-			cfg.Database.WALMode = *file.Database.WALMode
-		}
-		if file.Database.BusyTimeoutMs != nil {
-			cfg.Database.BusyTimeoutMs = *file.Database.BusyTimeoutMs
-		}
+	if f := file.Database; f != nil && f.Path != nil {
+		cfg.Database.Path = filepath.Clean(*f.Path)
 	}
 
-	if file.Google != nil {
-		if file.Google.ClientID != nil {
-			cfg.Google.ClientID = *file.Google.ClientID
-		}
-		if file.Google.ClientSecret != nil {
-			cfg.Google.ClientSecret = *file.Google.ClientSecret
-		}
-		if file.Google.RedirectURI != nil {
-			cfg.Google.RedirectURI = *file.Google.RedirectURI
-		}
-		if file.Google.Scopes != nil {
-			cfg.Google.Scopes = *file.Google.Scopes
-		}
+	if f := file.Google; f != nil {
+		setString(&cfg.Google.ClientID, f.ClientID)
+		setString(&cfg.Google.ClientSecret, f.ClientSecret)
+		setString(&cfg.Google.RedirectURI, f.RedirectURI)
+		setStrings(&cfg.Google.Scopes, f.Scopes)
 	}
 
-	if file.Approval != nil {
-		if file.Approval.TimeoutMinutes != nil {
-			cfg.Approval.TimeoutMinutes = *file.Approval.TimeoutMinutes
-		}
-		if file.Approval.DefaultAction != nil {
-			cfg.Approval.DefaultAction = *file.Approval.DefaultAction
-		}
+	if f := file.Approval; f != nil {
+		setInt(&cfg.Approval.TimeoutMinutes, f.TimeoutMinutes)
+		setString(&cfg.Approval.DefaultAction, f.DefaultAction)
 	}
 
-	if file.RateLimits != nil {
-		applyTierLimitFile(&cfg.RateLimits.Read, file.RateLimits.Read)
-		applyTierLimitFile(&cfg.RateLimits.Write, file.RateLimits.Write)
-		applyTierLimitFile(&cfg.RateLimits.Admin, file.RateLimits.Admin)
+	if f := file.RateLimits; f != nil {
+		applyTierLimit(&cfg.RateLimits.Read, f.Read)
+		applyTierLimit(&cfg.RateLimits.Write, f.Write)
+		applyTierLimit(&cfg.RateLimits.Admin, f.Admin)
 	}
 
-	if file.Retry != nil {
-		if file.Retry.Enabled != nil {
-			cfg.Retry.Enabled = *file.Retry.Enabled
-		}
-		if file.Retry.MaxAttempts != nil {
-			cfg.Retry.MaxAttempts = *file.Retry.MaxAttempts
-		}
-		if file.Retry.BackoffSeconds != nil {
-			cfg.Retry.BackoffSeconds = *file.Retry.BackoffSeconds
-		}
-		if file.Retry.RetryableStatusCodes != nil {
-			cfg.Retry.RetryableStatusCodes = *file.Retry.RetryableStatusCodes
-		}
+	if f := file.Retry; f != nil {
+		setBool(&cfg.Retry.Enabled, f.Enabled)
+		setInt(&cfg.Retry.MaxAttempts, f.MaxAttempts)
+		setInts(&cfg.Retry.BackoffSeconds, f.BackoffSeconds)
+		setInts(&cfg.Retry.RetryableStatusCodes, f.RetryableStatusCodes)
 	}
 
-	if file.Notifications != nil {
-		if file.Notifications.Ntfy != nil {
-			if file.Notifications.Ntfy.Enabled != nil {
-				cfg.Notifications.Ntfy.Enabled = *file.Notifications.Ntfy.Enabled
-			}
-			if file.Notifications.Ntfy.Server != nil {
-				cfg.Notifications.Ntfy.Server = *file.Notifications.Ntfy.Server
-			}
-			if file.Notifications.Ntfy.Topic != nil {
-				cfg.Notifications.Ntfy.Topic = *file.Notifications.Ntfy.Topic
-			}
-			if file.Notifications.Ntfy.Token != nil {
-				cfg.Notifications.Ntfy.Token = *file.Notifications.Ntfy.Token
-			}
-			if file.Notifications.Ntfy.Priority != nil {
-				cfg.Notifications.Ntfy.Priority = *file.Notifications.Ntfy.Priority
-			}
-			if file.Notifications.Ntfy.MinimalContent != nil {
-				cfg.Notifications.Ntfy.MinimalContent = *file.Notifications.Ntfy.MinimalContent
-			}
+	if f := file.Notifications; f != nil {
+		if n := f.Ntfy; n != nil {
+			setBool(&cfg.Notifications.Ntfy.Enabled, n.Enabled)
+			setString(&cfg.Notifications.Ntfy.Server, n.Server)
+			setString(&cfg.Notifications.Ntfy.Topic, n.Topic)
+			setString(&cfg.Notifications.Ntfy.Token, n.Token)
+			setString(&cfg.Notifications.Ntfy.Priority, n.Priority)
+			setBool(&cfg.Notifications.Ntfy.MinimalContent, n.MinimalContent)
 		}
-		if file.Notifications.Pushover != nil {
-			if file.Notifications.Pushover.Enabled != nil {
-				cfg.Notifications.Pushover.Enabled = *file.Notifications.Pushover.Enabled
-			}
-			if file.Notifications.Pushover.AppToken != nil {
-				cfg.Notifications.Pushover.AppToken = *file.Notifications.Pushover.AppToken
-			}
-			if file.Notifications.Pushover.UserKey != nil {
-				cfg.Notifications.Pushover.UserKey = *file.Notifications.Pushover.UserKey
-			}
-			if file.Notifications.Pushover.Priority != nil {
-				cfg.Notifications.Pushover.Priority = *file.Notifications.Pushover.Priority
-			}
-			if file.Notifications.Pushover.Sound != nil {
-				cfg.Notifications.Pushover.Sound = *file.Notifications.Pushover.Sound
-			}
+		if p := f.Pushover; p != nil {
+			setBool(&cfg.Notifications.Pushover.Enabled, p.Enabled)
+			setString(&cfg.Notifications.Pushover.AppToken, p.AppToken)
+			setString(&cfg.Notifications.Pushover.UserKey, p.UserKey)
+			setInt(&cfg.Notifications.Pushover.Priority, p.Priority)
+			setString(&cfg.Notifications.Pushover.Sound, p.Sound)
 		}
-		if file.Notifications.Telegram != nil {
-			if file.Notifications.Telegram.Enabled != nil {
-				cfg.Notifications.Telegram.Enabled = *file.Notifications.Telegram.Enabled
-			}
-			if file.Notifications.Telegram.BotToken != nil {
-				cfg.Notifications.Telegram.BotToken = *file.Notifications.Telegram.BotToken
-			}
-			if file.Notifications.Telegram.ChatID != nil {
-				cfg.Notifications.Telegram.ChatID = *file.Notifications.Telegram.ChatID
-			}
-			if file.Notifications.Telegram.WebhookSecret != nil {
-				cfg.Notifications.Telegram.WebhookSecret = *file.Notifications.Telegram.WebhookSecret
-			}
-			if file.Notifications.Telegram.WebhookPath != nil {
-				cfg.Notifications.Telegram.WebhookPath = *file.Notifications.Telegram.WebhookPath
-			}
-			if file.Notifications.Telegram.AutoRegisterWebhook != nil {
-				cfg.Notifications.Telegram.AutoRegisterWebhook = *file.Notifications.Telegram.AutoRegisterWebhook
-			}
+		if t := f.Telegram; t != nil {
+			setBool(&cfg.Notifications.Telegram.Enabled, t.Enabled)
+			setString(&cfg.Notifications.Telegram.BotToken, t.BotToken)
+			setString(&cfg.Notifications.Telegram.ChatID, t.ChatID)
+			setString(&cfg.Notifications.Telegram.WebhookSecret, t.WebhookSecret)
+			setString(&cfg.Notifications.Telegram.WebhookPath, t.WebhookPath)
+			setBool(&cfg.Notifications.Telegram.AutoRegisterWebhook, t.AutoRegisterWebhook)
+		}
+		if w := f.Webhook; w != nil {
+			setBool(&cfg.Notifications.Webhook.Enabled, w.Enabled)
+			setString(&cfg.Notifications.Webhook.URL, w.URL)
+			setString(&cfg.Notifications.Webhook.Secret, w.Secret)
+			setInt(&cfg.Notifications.Webhook.TimeoutSeconds, w.TimeoutSeconds)
 		}
 	}
 
 	if file.Moltbot != nil && file.Moltbot.Webhook != nil {
 		w := file.Moltbot.Webhook
-		if w.Enabled != nil {
-			cfg.Moltbot.Webhook.Enabled = *w.Enabled
-		}
-		if w.URL != nil {
-			cfg.Moltbot.Webhook.URL = *w.URL
-		}
-		if w.Token != nil {
-			cfg.Moltbot.Webhook.Token = *w.Token
-		}
-		if w.SessionKeyPrefix != nil {
-			cfg.Moltbot.Webhook.SessionKeyPrefix = *w.SessionKeyPrefix
-		}
-		if w.TimeoutSeconds != nil {
-			cfg.Moltbot.Webhook.TimeoutSeconds = *w.TimeoutSeconds
-		}
-		if w.MaxRetries != nil {
-			cfg.Moltbot.Webhook.MaxRetries = *w.MaxRetries
-		}
-		if w.RetryBackoff != nil {
-			cfg.Moltbot.Webhook.RetryBackoff = *w.RetryBackoff
-		}
-		if w.NotifyOn != nil {
-			cfg.Moltbot.Webhook.NotifyOn = *w.NotifyOn
-		}
+		setBool(&cfg.Moltbot.Webhook.Enabled, w.Enabled)
+		setString(&cfg.Moltbot.Webhook.URL, w.URL)
+		setString(&cfg.Moltbot.Webhook.Token, w.Token)
+		setString(&cfg.Moltbot.Webhook.SessionKeyPrefix, w.SessionKeyPrefix)
+		setInt(&cfg.Moltbot.Webhook.TimeoutSeconds, w.TimeoutSeconds)
+		setInt(&cfg.Moltbot.Webhook.MaxRetries, w.MaxRetries)
+		setInts(&cfg.Moltbot.Webhook.RetryBackoff, w.RetryBackoff)
+		setStrings(&cfg.Moltbot.Webhook.NotifyOn, w.NotifyOn)
 	}
 
-	if file.Auth != nil {
-		if file.Auth.AdminPasswordHash != nil {
-			cfg.Auth.AdminPasswordHash = *file.Auth.AdminPasswordHash
-		}
-		if file.Auth.AdminPassword != nil {
-			cfg.Auth.AdminPassword = *file.Auth.AdminPassword
-		}
-		if file.Auth.SecretKey != nil {
-			cfg.Auth.SecretKey = *file.Auth.SecretKey
-		}
-		if file.Auth.EncryptionKey != nil {
-			cfg.Auth.EncryptionKey = *file.Auth.EncryptionKey
-		}
-		if file.Auth.SessionDuration != nil {
-			cfg.Auth.SessionDuration = time.Duration(*file.Auth.SessionDuration)
-		}
-		if file.Auth.SessionRefresh != nil {
-			cfg.Auth.SessionRefresh = *file.Auth.SessionRefresh
-		}
-		if file.Auth.CloudflareAccess != nil {
-			if file.Auth.CloudflareAccess.Enabled != nil {
-				cfg.Auth.CloudflareAccess.Enabled = *file.Auth.CloudflareAccess.Enabled
-			}
-			if file.Auth.CloudflareAccess.Team != nil {
-				cfg.Auth.CloudflareAccess.Team = *file.Auth.CloudflareAccess.Team
-			}
-			if file.Auth.CloudflareAccess.Aud != nil {
-				cfg.Auth.CloudflareAccess.Aud = *file.Auth.CloudflareAccess.Aud
-			}
-		}
+	if f := file.Auth; f != nil {
+		setString(&cfg.Auth.AdminPasswordHash, f.AdminPasswordHash)
+		setString(&cfg.Auth.AdminPassword, f.AdminPassword)
+		setString(&cfg.Auth.SecretKey, f.SecretKey)
+		setString(&cfg.Auth.EncryptionKey, f.EncryptionKey)
+		setDuration(&cfg.Auth.SessionDuration, f.SessionDuration)
+		setBool(&cfg.Auth.SessionRefresh, f.SessionRefresh)
 	}
 
-	if file.Logging != nil {
-		if file.Logging.Level != nil {
-			cfg.Logging.Level = *file.Logging.Level
-		}
-		if file.Logging.Format != nil {
-			cfg.Logging.Format = *file.Logging.Format
-		}
-		if file.Logging.IncludeCaller != nil {
-			cfg.Logging.IncludeCaller = *file.Logging.IncludeCaller
-		}
+	if f := file.Logging; f != nil {
+		setString(&cfg.Logging.Level, f.Level)
+		setString(&cfg.Logging.Format, f.Format)
 	}
 
-	if file.Display != nil {
-		if file.Display.Timezone != nil {
-			cfg.Display.Timezone = *file.Display.Timezone
-		}
-		if file.Display.DateFormat != nil {
-			cfg.Display.DateFormat = *file.Display.DateFormat
-		}
-		if file.Display.TimeFormat != nil {
-			cfg.Display.TimeFormat = *file.Display.TimeFormat
-		}
-		if file.Display.DatetimeFormat != nil {
-			cfg.Display.DatetimeFormat = *file.Display.DatetimeFormat
-		}
+	if f := file.Display; f != nil {
+		setString(&cfg.Display.Timezone, f.Timezone)
+		setString(&cfg.Display.DateFormat, f.DateFormat)
+		setString(&cfg.Display.TimeFormat, f.TimeFormat)
+		setString(&cfg.Display.DatetimeFormat, f.DatetimeFormat)
 	}
 
-	if file.Retention != nil {
-		if file.Retention.Enabled != nil {
-			cfg.Retention.Enabled = *file.Retention.Enabled
-		}
-		if file.Retention.CompletedRequestsDays != nil {
-			cfg.Retention.CompletedRequestsDays = *file.Retention.CompletedRequestsDays
-		}
-		if file.Retention.AuditLogDays != nil {
-			cfg.Retention.AuditLogDays = *file.Retention.AuditLogDays
-		}
-		if file.Retention.WebhookFailuresDays != nil {
-			cfg.Retention.WebhookFailuresDays = *file.Retention.WebhookFailuresDays
-		}
-		if file.Retention.VacuumSchedule != nil {
-			cfg.Retention.VacuumSchedule = *file.Retention.VacuumSchedule
-		}
+	if f := file.Retention; f != nil {
+		setBool(&cfg.Retention.Enabled, f.Enabled)
+		setInt(&cfg.Retention.CompletedRequestsDays, f.CompletedRequestsDays)
+		setInt(&cfg.Retention.AuditLogDays, f.AuditLogDays)
+		setInt(&cfg.Retention.WebhookFailuresDays, f.WebhookFailuresDays)
 	}
 }
 
-func applyTierLimitFile(limit *TierLimit, file *TierLimitFile) {
+func applyTierLimit(limit *TierLimit, file *TierLimitFile) {
 	if limit == nil || file == nil {
 		return
 	}
-	if file.RequestsPerMinute != nil {
-		limit.RequestsPerMinute = *file.RequestsPerMinute
-	}
-	if file.Burst != nil {
-		limit.Burst = *file.Burst
+	setInt(&limit.RequestsPerMinute, file.RequestsPerMinute)
+	setInt(&limit.Burst, file.Burst)
+}
+
+func setString(dst *string, src *string) {
+	if src != nil {
+		*dst = *src
 	}
 }
 
-// SaveConfigFile writes the configuration to a YAML file.
+func setInt(dst *int, src *int) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setBool(dst *bool, src *bool) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setInts(dst *[]int, src *[]int) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setStrings(dst *[]string, src *[]string) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func setDuration(dst *time.Duration, src *fileDuration) {
+	if src != nil {
+		*dst = time.Duration(*src)
+	}
+}
+
+// SaveConfigFile writes the settings the setup wizard collects.
+//
+// The existing file is read first and only the managed keys are replaced, so
+// running setup (or re-running it) never discards notification, retention, or
+// rate-limit settings an operator has written by hand.
 func SaveConfigFile(cfg *Config, path string) error {
-	// Create directory if it doesn't exist
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("failed to create the config directory: %w", err)
 	}
 
-	// Build the file structure with only non-empty values
-	file := ConfigFile{}
-
-	// Server config
-	if cfg.Server.BaseURL != "" {
-		file.Server = &ServerConfigFile{
-			BaseURL: &cfg.Server.BaseURL,
+	file := &ConfigFile{}
+	if existing, err := os.ReadFile(path); err == nil {
+		if parsed, parseErr := parseConfigFile(existing); parseErr == nil {
+			file = parsed
+		} else {
+			return fmt.Errorf("refusing to overwrite an unreadable config file: %w", parseErr)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to read the existing config file: %w", err)
 	}
 
-	// Auth config (required fields)
-	file.Auth = &AuthConfigFile{}
+	if file.Server == nil {
+		file.Server = &ServerConfigFile{}
+	}
+	if cfg.Server.BaseURL != "" {
+		file.Server.BaseURL = &cfg.Server.BaseURL
+	}
+
+	if file.Auth == nil {
+		file.Auth = &AuthConfigFile{}
+	}
 	if cfg.Auth.AdminPasswordHash != "" {
 		file.Auth.AdminPasswordHash = &cfg.Auth.AdminPasswordHash
 	}
@@ -497,9 +435,10 @@ func SaveConfigFile(cfg *Config, path string) error {
 		file.Auth.EncryptionKey = &cfg.Auth.EncryptionKey
 	}
 
-	// Google config (if configured)
 	if cfg.Google.ClientID != "" || cfg.Google.ClientSecret != "" {
-		file.Google = &GoogleConfigFile{}
+		if file.Google == nil {
+			file.Google = &GoogleConfigFile{}
+		}
 		if cfg.Google.ClientID != "" {
 			file.Google.ClientID = &cfg.Google.ClientID
 		}
@@ -508,25 +447,31 @@ func SaveConfigFile(cfg *Config, path string) error {
 		}
 	}
 
-	data, err := yaml.Marshal(&file)
+	data, err := yaml.Marshal(file)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return fmt.Errorf("failed to encode the configuration: %w", err)
 	}
 
-	// Add a header comment
-	header := []byte("# SchedLock Configuration\n# Generated by setup wizard\n\n")
-	data = append(header, data...)
+	header := []byte("# SchedLock configuration\n" +
+		"# This file holds secrets. Keep it readable only by the service account.\n\n")
 
-	// Write with restricted permissions (owner read/write only)
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+	// Write to a temporary file and rename, so an interrupted write cannot
+	// leave a half-written configuration (and with it, an unrecoverable
+	// encryption key) behind.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(header, data...), 0o600); err != nil {
+		return fmt.Errorf("failed to write the config file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("failed to replace the config file: %w", err)
 	}
 
 	return nil
 }
 
-// GetConfigFilePath returns the path to the config file based on environment variables.
+// GetConfigFilePath returns the configured config file location.
 func GetConfigFilePath() string {
-	dataDir := getEnvAnyDefault(DefaultDataDir, "SCHEDLOCK_DATA_DIR", "DATA_DIR")
-	return getEnvAnyDefault(filepath.Join(dataDir, "config.yaml"), "SCHEDLOCK_CONFIG_FILE", "CONFIG_FILE")
+	dataDir := envString(DefaultDataDir, "SCHEDLOCK_DATA_DIR", "DATA_DIR")
+	return envString(filepath.Join(dataDir, "config.yaml"), "SCHEDLOCK_CONFIG_FILE", "CONFIG_FILE")
 }

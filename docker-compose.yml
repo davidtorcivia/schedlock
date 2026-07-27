@@ -1,79 +1,90 @@
-version: '3.8'
+# SchedLock deployment.
+#
+# The quick start needs no configuration: bring the stack up and the first-run
+# wizard sets the admin password and generates the secrets, storing them in
+# /data/config.yaml. The environment variables below are optional overrides for
+# deployments that prefer to configure everything ahead of time.
 
 services:
   schedlock:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${SCHEDLOCK_VERSION:-dev}
+    image: schedlock:${SCHEDLOCK_VERSION:-dev}
     container_name: schedlock
     restart: unless-stopped
+
     ports:
-      - "8081:8080"
+      - "${SCHEDLOCK_PORT:-8080}:8080"
+
     volumes:
-      - schedlock_data:/app/data
+      - schedlock_data:/data
+
     environment:
-      # Server
-      - SCHEDLOCK_SERVER_PORT=8080
-      - SCHEDLOCK_BASE_URL=${SCHEDLOCK_BASE_URL:-http://localhost:8080}
+      # The public address of this instance. Approval links point here, and it
+      # must match the redirect URI registered with Google.
+      SCHEDLOCK_BASE_URL: ${SCHEDLOCK_BASE_URL:-http://localhost:8080}
 
-      # Security
-      - SCHEDLOCK_SERVER_SECRET=${SCHEDLOCK_SERVER_SECRET:?Server secret is required}
-      - SCHEDLOCK_ENCRYPTION_KEY=${SCHEDLOCK_ENCRYPTION_KEY:?Encryption key is required}
-      - SCHEDLOCK_AUTH_PASSWORD_HASH=${SCHEDLOCK_AUTH_PASSWORD_HASH:-}
-      - SCHEDLOCK_ADMIN_PASSWORD=${SCHEDLOCK_ADMIN_PASSWORD:-}
+      # Secrets. Leave unset to have the setup wizard generate and persist them.
+      SCHEDLOCK_SERVER_SECRET: ${SCHEDLOCK_SERVER_SECRET:-}
+      SCHEDLOCK_ENCRYPTION_KEY: ${SCHEDLOCK_ENCRYPTION_KEY:-}
+      SCHEDLOCK_AUTH_PASSWORD_HASH: ${SCHEDLOCK_AUTH_PASSWORD_HASH:-}
 
-      # Google OAuth
-      - SCHEDLOCK_GOOGLE_CLIENT_ID=${SCHEDLOCK_GOOGLE_CLIENT_ID}
-      - SCHEDLOCK_GOOGLE_CLIENT_SECRET=${SCHEDLOCK_GOOGLE_CLIENT_SECRET}
+      # Google OAuth. These can also be entered in Settings after first run.
+      SCHEDLOCK_GOOGLE_CLIENT_ID: ${SCHEDLOCK_GOOGLE_CLIENT_ID:-}
+      SCHEDLOCK_GOOGLE_CLIENT_SECRET: ${SCHEDLOCK_GOOGLE_CLIENT_SECRET:-}
 
-      # Notifications - ntfy
-      - SCHEDLOCK_NTFY_ENABLED=${SCHEDLOCK_NTFY_ENABLED:-false}
-      - SCHEDLOCK_NTFY_TOPIC=${SCHEDLOCK_NTFY_TOPIC}
-      - SCHEDLOCK_NTFY_SERVER_URL=${SCHEDLOCK_NTFY_SERVER_URL:-https://ntfy.sh}
-      - SCHEDLOCK_NTFY_TOKEN=${SCHEDLOCK_NTFY_TOKEN}
-      - SCHEDLOCK_NTFY_MINIMAL_CONTENT=${SCHEDLOCK_NTFY_MINIMAL_CONTENT:-false}
+      # Behind a reverse proxy, list its address so forwarded client IPs are
+      # believed. Leave empty when SchedLock is reached directly.
+      SCHEDLOCK_TRUSTED_PROXIES: ${SCHEDLOCK_TRUSTED_PROXIES:-}
 
-      # Notifications - Pushover
-      - SCHEDLOCK_PUSHOVER_ENABLED=${SCHEDLOCK_PUSHOVER_ENABLED:-false}
-      - SCHEDLOCK_PUSHOVER_APP_TOKEN=${SCHEDLOCK_PUSHOVER_APP_TOKEN}
-      - SCHEDLOCK_PUSHOVER_USER_KEY=${SCHEDLOCK_PUSHOVER_USER_KEY}
+      SCHEDLOCK_LOG_LEVEL: ${SCHEDLOCK_LOG_LEVEL:-info}
+      SCHEDLOCK_LOG_FORMAT: ${SCHEDLOCK_LOG_FORMAT:-json}
+      SCHEDLOCK_DISPLAY_TIMEZONE: ${SCHEDLOCK_DISPLAY_TIMEZONE:-UTC}
 
-      # Notifications - Telegram
-      - SCHEDLOCK_TELEGRAM_ENABLED=${SCHEDLOCK_TELEGRAM_ENABLED:-false}
-      - SCHEDLOCK_TELEGRAM_BOT_TOKEN=${SCHEDLOCK_TELEGRAM_BOT_TOKEN}
-      - SCHEDLOCK_TELEGRAM_CHAT_ID=${SCHEDLOCK_TELEGRAM_CHAT_ID}
-      - SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET=${SCHEDLOCK_TELEGRAM_WEBHOOK_SECRET}
+    # The process needs no elevated capability: it listens on 8080 as an
+    # unprivileged user and writes only to its data volume.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
-      # Moltbot webhook
-      - SCHEDLOCK_MOLTBOT_WEBHOOK_URL=${SCHEDLOCK_MOLTBOT_WEBHOOK_URL}
-      - SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET=${SCHEDLOCK_MOLTBOT_WEBHOOK_SECRET}
-
-      # Logging
-      - SCHEDLOCK_LOG_LEVEL=${SCHEDLOCK_LOG_LEVEL:-info}
-      - SCHEDLOCK_LOG_FORMAT=${SCHEDLOCK_LOG_FORMAT:-json}
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
 
-  # Optional: Cloudflare Tunnel for public access
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: expose SchedLock through a Cloudflare Tunnel, so approval links
+  # work from a phone without opening a port.
   # cloudflared:
   #   image: cloudflare/cloudflared:latest
   #   container_name: schedlock-tunnel
   #   restart: unless-stopped
   #   command: tunnel run
   #   environment:
-  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
   #   depends_on:
   #     - schedlock
 
-  # Optional: Litestream for continuous SQLite backup
+  # Optional: continuous backup of the SQLite database. See litestream.yml.
   # litestream:
   #   image: litestream/litestream:0.3
   #   container_name: schedlock-litestream
   #   restart: unless-stopped
   #   volumes:
-  #     - schedlock_data:/app/data
+  #     - schedlock_data:/data
   #     - ./litestream.yml:/etc/litestream.yml:ro
   #   command: replicate
   #   depends_on:

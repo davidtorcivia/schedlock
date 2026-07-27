@@ -1,4 +1,4 @@
-// Package webhook provides Moltbot webhook delivery.
+// Package webhook delivers request status updates to the calling system.
 package webhook
 
 import (
@@ -17,57 +17,53 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// Client delivers webhooks to Moltbot.
+// maxResponseBytes caps how much of a webhook response is read for logging, so
+// a misbehaving endpoint cannot stream unbounded data into memory.
+const maxResponseBytes = 8 << 10
+
+// retryBatchSize limits how many failed deliveries are retried per sweep.
+const retryBatchSize = 10
+
+// Client delivers status webhooks and retries failures.
 type Client struct {
 	config     *config.MoltbotConfig
 	db         *database.DB
 	httpClient *http.Client
 }
 
-// NewClient creates a new webhook client.
+// NewClient creates a webhook client.
 func NewClient(cfg *config.MoltbotConfig, db *database.DB) *Client {
 	timeout := 30 * time.Second
 	if cfg.Webhook.TimeoutSeconds > 0 {
 		timeout = time.Duration(cfg.Webhook.TimeoutSeconds) * time.Second
 	}
 	return &Client{
-		config: cfg,
-		db:     db,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		config:     cfg,
+		db:         db,
+		httpClient: &http.Client{Timeout: timeout},
 	}
 }
 
-// Enabled returns whether the webhook client is configured.
+// Enabled reports whether a destination is configured.
 func (c *Client) Enabled() bool {
-	// Backward-compatible: enable if URL is provided.
-	if c.config.Webhook.URL == "" {
-		return false
-	}
-	return true
+	return c.config.Webhook.URL != ""
 }
 
-// Deliver sends a webhook event to Moltbot.
+// Deliver sends one status event, retrying transient failures before recording
+// the payload for the background retry worker.
 func (c *Client) Deliver(ctx context.Context, event engine.WebhookEvent) error {
 	if !c.Enabled() {
 		return nil
 	}
 
-	payload := WebhookPayload{
-		Event:     "request.status",
-		RequestID: event.RequestID,
-		Status:    event.Status,
-		Message:   event.Message,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	if event.Suggestion != "" {
-		payload.Suggestion = event.Suggestion
-	}
-
-	if len(event.Result) > 0 {
-		payload.Result = event.Result
+	payload := Payload{
+		Event:      EventRequestStatus,
+		RequestID:  event.RequestID,
+		Status:     event.Status,
+		Message:    event.Message,
+		Suggestion: event.Suggestion,
+		Result:     event.Result,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 	}
 
 	data, err := json.Marshal(payload)
@@ -75,47 +71,45 @@ func (c *Client) Deliver(ctx context.Context, event engine.WebhookEvent) error {
 		return fmt.Errorf("failed to marshal webhook payload: %w", err)
 	}
 
-	// Try to deliver with retries
-	var lastErr error
-	maxAttempts := c.config.Webhook.MaxRetries + 1
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	maxAttempts := max(c.config.Webhook.MaxRetries+1, 1)
 
+	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			backoffSeconds := attempt * 2
-			if attempt-1 < len(c.config.Webhook.RetryBackoff) {
-				backoffSeconds = c.config.Webhook.RetryBackoff[attempt-1]
+			// Backoff must observe cancellation: a sleeping delivery would
+			// otherwise hold shutdown open for the length of the retry ladder.
+			if err := sleep(ctx, c.backoffFor(attempt)); err != nil {
+				lastErr = err
+				break
 			}
-			time.Sleep(time.Duration(backoffSeconds) * time.Second)
 		}
 
-		err := c.doDelivery(ctx, data)
-		if err == nil {
-			util.Info("Webhook delivered successfully",
-				"request_id", event.RequestID,
-				"status", event.Status,
-			)
+		if err := c.post(ctx, data); err == nil {
+			util.Info("Webhook delivered", "request_id", event.RequestID, "status", event.Status)
 			return nil
+		} else {
+			lastErr = err
+			util.Warn("Webhook delivery failed",
+				"attempt", attempt+1, "request_id", event.RequestID, "error", err)
 		}
-
-		lastErr = err
-		util.Warn("Webhook delivery failed",
-			"attempt", attempt+1,
-			"error", err,
-		)
 	}
 
-	// Log the failure for retry
-	c.logFailure(ctx, event.RequestID, event.Status, data, lastErr)
-
+	c.recordFailure(ctx, event.RequestID, event.Status, data, lastErr)
 	return lastErr
 }
 
-// doDelivery performs the actual HTTP request.
-func (c *Client) doDelivery(ctx context.Context, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.config.Webhook.URL, bytes.NewReader(data))
+func (c *Client) backoffFor(attempt int) time.Duration {
+	backoffs := c.config.Webhook.RetryBackoff
+	idx := attempt - 1
+	if idx < len(backoffs) {
+		return time.Duration(backoffs[idx]) * time.Second
+	}
+	return time.Duration(attempt*2) * time.Second
+}
+
+// post performs one delivery attempt.
+func (c *Client) post(ctx context.Context, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.Webhook.URL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -123,10 +117,8 @@ func (c *Client) doDelivery(ctx context.Context, data []byte) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "SchedLock/1.0")
 
-	// Add authentication header if configured
 	if c.config.Webhook.Token != "" {
-		signature := util.ComputeHMAC(data, c.config.Webhook.Token)
-		req.Header.Set("X-SchedLock-Signature", signature)
+		req.Header.Set("X-SchedLock-Signature", crypto.SignPayload(data, c.config.Webhook.Token))
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -135,86 +127,108 @@ func (c *Client) doDelivery(ctx context.Context, data []byte) error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("webhook returned status %d: %s", resp.StatusCode, util.TruncateString(string(body), 200))
 	}
-
 	return nil
 }
 
-// logFailure records a failed webhook delivery for later retry.
-func (c *Client) logFailure(ctx context.Context, requestID, status string, payload []byte, err error) {
-	webhookID, idErr := crypto.GenerateWebhookID()
-	if idErr != nil {
+// recordFailure stores an undelivered payload for later retry.
+func (c *Client) recordFailure(ctx context.Context, requestID, status string, payload []byte, cause error) {
+	webhookID, err := crypto.GenerateWebhookID()
+	if err != nil {
 		webhookID = fmt.Sprintf("whk_%d", time.Now().UnixNano())
 	}
 
-	_, dbErr := c.db.ExecContext(ctx, `
-		INSERT INTO webhook_failures (webhook_id, request_id, status, payload, error, attempts)
-		VALUES (?, ?, ?, ?, ?, 1)
-	`, webhookID, requestID, status, string(payload), err.Error())
+	errText := ""
+	if cause != nil {
+		errText = cause.Error()
+	}
 
-	if dbErr != nil {
-		util.Error("Failed to log webhook failure", "error", dbErr)
+	if _, err := c.db.ExecContext(context.WithoutCancel(ctx), `
+		INSERT INTO webhook_failures (webhook_id, request_id, status, payload, error, attempts)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), 1)
+	`, webhookID, requestID, status, string(payload), errText); err != nil {
+		util.Error("Failed to record webhook failure", "error", err, "request_id", requestID)
 	}
 }
 
-// RetryFailures attempts to redeliver failed webhooks.
-func (c *Client) RetryFailures(ctx context.Context) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, webhook_id, request_id, status, payload, attempts
-		FROM webhook_failures
-		WHERE resolved_at IS NULL
-		AND attempts < ?
-		ORDER BY created_at ASC
-		LIMIT 10
-	`, c.config.Webhook.MaxRetries+1)
+// pendingDelivery is one stored failure awaiting retry.
+type pendingDelivery struct {
+	id        int64
+	webhookID string
+	requestID string
+	payload   string
+	attempts  int
+}
 
+// RetryFailures re-attempts stored failures.
+func (c *Client) RetryFailures(ctx context.Context) {
+	pending, err := c.loadPending(ctx)
 	if err != nil {
 		util.Error("Failed to query webhook failures", "error", err)
 		return
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var (
-			id        int64
-			webhookID string
-			requestID string
-			status    string
-			payload   string
-			attempts  int
-		)
+	for _, delivery := range pending {
+		if ctx.Err() != nil {
+			return
+		}
 
-		if err := rows.Scan(&id, &webhookID, &requestID, &status, &payload, &attempts); err != nil {
+		if err := c.post(ctx, []byte(delivery.payload)); err != nil {
+			if _, dbErr := c.db.ExecContext(ctx,
+				`UPDATE webhook_failures SET attempts = attempts + 1, error = ? WHERE id = ?`,
+				err.Error(), delivery.id); dbErr != nil {
+				util.Error("Failed to record webhook retry", "error", dbErr)
+			}
+			util.Warn("Webhook retry failed",
+				"request_id", delivery.requestID, "attempts", delivery.attempts+1, "error", err)
 			continue
 		}
 
-		// Try to deliver
-		err := c.doDelivery(ctx, []byte(payload))
-		if err == nil {
-			// Success - mark resolved
-			c.db.ExecContext(ctx, `UPDATE webhook_failures SET resolved_at = datetime('now') WHERE id = ?`, id)
-			util.Info("Webhook retry succeeded", "request_id", requestID, "webhook_id", webhookID)
-		} else {
-			// Increment attempts
-			c.db.ExecContext(ctx, `
-				UPDATE webhook_failures
-				SET attempts = attempts + 1
-				WHERE id = ?
-			`, id)
-			util.Warn("Webhook retry failed",
-				"request_id", requestID,
-				"attempts", attempts+1,
-				"error", err,
-			)
+		if _, dbErr := c.db.ExecContext(ctx,
+			`UPDATE webhook_failures SET resolved_at = datetime('now') WHERE id = ?`,
+			delivery.id); dbErr != nil {
+			util.Error("Failed to mark webhook resolved", "error", dbErr)
 		}
+		util.Info("Webhook retry succeeded",
+			"request_id", delivery.requestID, "webhook_id", delivery.webhookID)
 	}
 }
 
-// StartRetryWorker starts a background worker for retrying failed webhooks.
+// loadPending reads the retry batch fully before any delivery runs.
+//
+// Holding a result set open while issuing writes on the same database keeps a
+// connection checked out for the whole sweep, which under SQLite's single-writer
+// model invites lock contention with the rest of the application.
+func (c *Client) loadPending(ctx context.Context) ([]pendingDelivery, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, webhook_id, request_id, payload, attempts
+		FROM webhook_failures
+		WHERE resolved_at IS NULL AND attempts < ?
+		ORDER BY created_at ASC
+		LIMIT ?
+	`, c.config.Webhook.MaxRetries+1, retryBatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pending []pendingDelivery
+	for rows.Next() {
+		var d pendingDelivery
+		if err := rows.Scan(&d.id, &d.webhookID, &d.requestID, &d.payload, &d.attempts); err != nil {
+			return nil, err
+		}
+		pending = append(pending, d)
+	}
+
+	return pending, rows.Err()
+}
+
+// StartRetryWorker periodically retries stored failures until ctx is done.
 func (c *Client) StartRetryWorker(ctx context.Context) {
 	if !c.Enabled() {
 		return
@@ -234,4 +248,27 @@ func (c *Client) StartRetryWorker(ctx context.Context) {
 			c.RetryFailures(ctx)
 		}
 	}
+}
+
+// sleep waits for d, returning early if the context is cancelled.
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

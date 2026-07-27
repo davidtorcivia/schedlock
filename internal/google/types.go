@@ -1,11 +1,9 @@
-// Package google provides type definitions for Google Calendar API.
+// Package google provides the calendar types returned to API clients.
 package google
 
-import (
-	"time"
-)
+import "time"
 
-// Calendar represents a Google Calendar.
+// Calendar is a calendar the connected account can access.
 type Calendar struct {
 	ID          string `json:"id"`
 	Summary     string `json:"summary"`
@@ -15,35 +13,65 @@ type Calendar struct {
 	AccessRole  string `json:"accessRole,omitempty"`
 }
 
-// Event represents a Google Calendar event.
+// Event is a calendar event.
 type Event struct {
-	ID           string     `json:"id"`
-	Summary      string     `json:"summary"`
-	Description  string     `json:"description,omitempty"`
-	Location     string     `json:"location,omitempty"`
-	Start        *EventTime `json:"start"`
-	End          *EventTime `json:"end"`
-	Attendees    []Attendee `json:"attendees,omitempty"`
-	HtmlLink     string     `json:"htmlLink,omitempty"`
-	Status       string     `json:"status,omitempty"`
-	Created      time.Time  `json:"created,omitempty"`
-	Updated      time.Time  `json:"updated,omitempty"`
-	Creator      *Person    `json:"creator,omitempty"`
-	Organizer    *Person    `json:"organizer,omitempty"`
-	ColorId      string     `json:"colorId,omitempty"`
-	Visibility   string     `json:"visibility,omitempty"`
-	Transparency string     `json:"transparency,omitempty"`
-	Reminders    *Reminders `json:"reminders,omitempty"`
+	ID          string     `json:"id"`
+	Summary     string     `json:"summary"`
+	Description string     `json:"description,omitempty"`
+	Location    string     `json:"location,omitempty"`
+	Start       *EventTime `json:"start,omitempty"`
+	End         *EventTime `json:"end,omitempty"`
+	Attendees   []Attendee `json:"attendees,omitempty"`
+	HTMLLink    string     `json:"htmlLink,omitempty"`
+	Status      string     `json:"status,omitempty"`
+	Created     *time.Time `json:"created,omitempty"`
+	Updated     *time.Time `json:"updated,omitempty"`
+	Creator     *Person    `json:"creator,omitempty"`
+	Organizer   *Person    `json:"organizer,omitempty"`
+	ColorID     string     `json:"colorId,omitempty"`
+	Visibility  string     `json:"visibility,omitempty"`
+	Reminders   *Reminders `json:"reminders,omitempty"`
 }
 
-// EventTime represents a time with optional date-only and timezone.
+// EventTime is an event boundary: either a timestamp or an all-day date.
+//
+// DateTime is a pointer because a struct-typed time.Time cannot be omitted by
+// encoding/json, which would render every all-day event with a bogus
+// "0001-01-01T00:00:00Z" alongside its date.
 type EventTime struct {
-	DateTime time.Time `json:"dateTime,omitempty"`
-	Date     string    `json:"date,omitempty"` // YYYY-MM-DD for all-day events
-	TimeZone string    `json:"timeZone,omitempty"`
+	DateTime *time.Time `json:"dateTime,omitempty"`
+	Date     string     `json:"date,omitempty"` // YYYY-MM-DD for all-day events
+	TimeZone string     `json:"timeZone,omitempty"`
 }
 
-// Attendee represents an event attendee.
+// IsAllDay reports whether this boundary is a whole-day date.
+func (t *EventTime) IsAllDay() bool {
+	return t != nil && t.DateTime == nil && t.Date != ""
+}
+
+// Time returns the boundary as a time, resolving all-day dates to midnight.
+func (t *EventTime) Time() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	if t.DateTime != nil {
+		return *t.DateTime
+	}
+	if t.Date != "" {
+		loc := time.UTC
+		if t.TimeZone != "" {
+			if parsed, err := time.LoadLocation(t.TimeZone); err == nil {
+				loc = parsed
+			}
+		}
+		if parsed, err := time.ParseInLocation("2006-01-02", t.Date, loc); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+// Attendee is an invited participant.
 type Attendee struct {
 	Email          string `json:"email"`
 	DisplayName    string `json:"displayName,omitempty"`
@@ -53,26 +81,26 @@ type Attendee struct {
 	Self           bool   `json:"self,omitempty"`
 }
 
-// Person represents a person (creator/organizer).
+// Person is an event creator or organizer.
 type Person struct {
 	Email       string `json:"email,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
 	Self        bool   `json:"self,omitempty"`
 }
 
-// Reminders represents event reminders.
+// Reminders configures event notifications.
 type Reminders struct {
 	UseDefault bool       `json:"useDefault"`
 	Overrides  []Reminder `json:"overrides,omitempty"`
 }
 
-// Reminder represents a single reminder.
+// Reminder is a single reminder override.
 type Reminder struct {
 	Method  string `json:"method"` // "email" or "popup"
 	Minutes int    `json:"minutes"`
 }
 
-// EventListOptions contains options for listing events.
+// EventListOptions are the parameters for listing events.
 type EventListOptions struct {
 	CalendarID   string
 	TimeMin      time.Time
@@ -84,52 +112,45 @@ type EventListOptions struct {
 	OrderBy      string
 }
 
-// EventListResponse represents the response from listing events.
+// EventListResponse is a page of events.
 type EventListResponse struct {
 	Events        []Event `json:"events"`
 	NextPageToken string  `json:"nextPageToken,omitempty"`
 }
 
-// FreeBusyRequest represents a free/busy query request.
+// FreeBusyRequest queries busy intervals across calendars.
 type FreeBusyRequest struct {
-	TimeMin time.Time           `json:"timeMin"`
-	TimeMax time.Time           `json:"timeMax"`
-	Items   []FreeBusyCalendar  `json:"items"`
+	TimeMin time.Time          `json:"timeMin"`
+	TimeMax time.Time          `json:"timeMax"`
+	Items   []FreeBusyCalendar `json:"items"`
 }
 
-// FreeBusyCalendar identifies a calendar in a free/busy query.
+// FreeBusyCalendar identifies one calendar in a free/busy query.
 type FreeBusyCalendar struct {
 	ID string `json:"id"`
 }
 
-// FreeBusyResponse represents the response from a free/busy query.
+// FreeBusyResponse reports busy intervals per calendar.
 type FreeBusyResponse struct {
-	TimeMin   time.Time                    `json:"timeMin"`
-	TimeMax   time.Time                    `json:"timeMax"`
+	TimeMin   time.Time                       `json:"timeMin"`
+	TimeMax   time.Time                       `json:"timeMax"`
 	Calendars map[string]FreeBusyCalendarInfo `json:"calendars"`
 }
 
-// FreeBusyCalendarInfo contains free/busy info for a calendar.
+// FreeBusyCalendarInfo is one calendar's availability.
 type FreeBusyCalendarInfo struct {
 	Busy   []TimePeriod `json:"busy"`
 	Errors []Error      `json:"errors,omitempty"`
 }
 
-// TimePeriod represents a busy time period.
+// TimePeriod is a busy interval.
 type TimePeriod struct {
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
 }
 
-// Error represents an API error.
+// Error is an upstream error reported for a single calendar.
 type Error struct {
-	Domain  string `json:"domain"`
-	Reason  string `json:"reason"`
-	Message string `json:"message,omitempty"`
-}
-
-// CalendarListResponse represents the response from listing calendars.
-type CalendarListResponse struct {
-	Calendars     []Calendar `json:"calendars"`
-	NextPageToken string     `json:"nextPageToken,omitempty"`
+	Domain string `json:"domain"`
+	Reason string `json:"reason"`
 }

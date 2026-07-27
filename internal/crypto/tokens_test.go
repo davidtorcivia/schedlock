@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -56,9 +57,13 @@ func TestGenerateSessionID(t *testing.T) {
 		t.Fatalf("GenerateSessionID failed: %v", err)
 	}
 
-	// Should be base64 URL encoded 32 bytes = 44 chars (no padding with URLEncoding)
-	if len(sessionID) != 44 {
-		t.Fatalf("Session ID length incorrect: got %d, want 44", len(sessionID))
+	// 32 random bytes, base64url without padding.
+	decoded, err := base64.RawURLEncoding.DecodeString(sessionID)
+	if err != nil {
+		t.Fatalf("Session ID is not valid base64url: %v", err)
+	}
+	if len(decoded) != 32 {
+		t.Fatalf("Session ID entropy incorrect: got %d bytes, want 32", len(decoded))
 	}
 }
 
@@ -80,9 +85,13 @@ func TestGenerateCSRFToken(t *testing.T) {
 		t.Fatalf("GenerateCSRFToken failed: %v", err)
 	}
 
-	// Should be base64 URL encoded 32 bytes = 44 chars
-	if len(token) != 44 {
-		t.Fatalf("CSRF token length incorrect: got %d, want 44", len(token))
+	// 32 random bytes, base64url without padding.
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatalf("CSRF token is not valid base64url: %v", err)
+	}
+	if len(decoded) != 32 {
+		t.Fatalf("CSRF token entropy incorrect: got %d bytes, want 32", len(decoded))
 	}
 }
 
@@ -150,7 +159,7 @@ func TestGenerateNanoID(t *testing.T) {
 		// Check that random part only contains base62 characters
 		randomPart := id[len(tt.prefix):]
 		for _, c := range randomPart {
-			if !strings.ContainsRune(base62Chars, c) {
+			if !strings.ContainsRune(base62Alphabet, c) {
 				t.Fatalf("ID contains invalid character: %c in %s", c, id)
 			}
 		}
@@ -186,22 +195,5 @@ func TestGenerateAPIKeyID(t *testing.T) {
 	// key_ + 16 chars = 20 total
 	if len(id) != 20 {
 		t.Fatalf("API Key ID length incorrect: got %d, want 20", len(id))
-	}
-}
-
-func TestBytesToBase62_ValidOutput(t *testing.T) {
-	// Test with various byte values
-	testData := []byte{0, 61, 62, 123, 255, 1, 100, 200}
-
-	result, err := bytesToBase62(testData)
-	if err != nil {
-		t.Fatalf("bytesToBase62 failed: %v", err)
-	}
-
-	// Check all characters are valid base62
-	for _, c := range result {
-		if !strings.ContainsRune(base62Chars, c) {
-			t.Fatalf("Output contains invalid character: %c", c)
-		}
 	}
 }

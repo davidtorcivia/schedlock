@@ -1,123 +1,134 @@
-// Package middleware provides request logging middleware.
+// Package middleware provides request logging.
 package middleware
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// responseWriter wraps http.ResponseWriter to capture status code and size.
-type responseWriter struct {
+// responseRecorder captures the status code and byte count of a response.
+type responseRecorder struct {
 	http.ResponseWriter
-	statusCode int
-	size       int
+	statusCode  int
+	size        int
+	wroteHeader bool
 }
 
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
+func (rw *responseRecorder) WriteHeader(code int) {
+	if rw.wroteHeader {
+		return
 	}
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
+	rw.wroteHeader = true
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-func (rw *responseWriter) Write(b []byte) (int, error) {
+func (rw *responseRecorder) Write(b []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
 	size, err := rw.ResponseWriter.Write(b)
 	rw.size += size
 	return size, err
 }
 
-// Logging returns middleware that logs HTTP requests.
-func Logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		// Wrap response writer to capture status code
-		rw := newResponseWriter(w)
-
-		// Process request
-		next.ServeHTTP(rw, r)
-
-		// Calculate duration
-		duration := time.Since(start)
-
-		// Get client IP (handle proxies)
-		clientIP := r.Header.Get("X-Forwarded-For")
-		if clientIP == "" {
-			clientIP = r.Header.Get("X-Real-IP")
-		}
-		if clientIP == "" {
-			clientIP = r.RemoteAddr
-		}
-
-		// Get API key prefix if authenticated
-		var apiKeyPrefix string
-		if authKey := APIKeyFromContext(r.Context()); authKey != nil {
-			apiKeyPrefix = authKey.KeyPrefix
-		}
-
-		// Log the request
-		logFields := map[string]interface{}{
-			"method":      r.Method,
-			"path":        r.URL.Path,
-			"status":      rw.statusCode,
-			"duration_ms": duration.Milliseconds(),
-			"size":        rw.size,
-			"client_ip":   clientIP,
-			"user_agent":  r.UserAgent(),
-		}
-
-		if apiKeyPrefix != "" {
-			logFields["api_key"] = apiKeyPrefix
-		}
-
-		if r.URL.RawQuery != "" {
-			logFields["query"] = r.URL.RawQuery
-		}
-
-		// Log at appropriate level based on status code
-		logger := util.GetDefaultLogger().WithFields(logFields)
-
-		switch {
-		case rw.statusCode >= 500:
-			logger.Error("HTTP request")
-		case rw.statusCode >= 400:
-			logger.Warn("HTTP request")
-		default:
-			logger.Info("HTTP request")
-		}
-	})
+// Flush lets streaming handlers through the wrapper.
+func (rw *responseRecorder) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
-// RequestID returns middleware that adds a unique request ID.
-func RequestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check for existing request ID header
-		requestID := r.Header.Get("X-Request-ID")
-		if requestID == "" {
-			// Generate new request ID
-			var err error
-			requestID, err = util.GenerateRequestID()
-			if err != nil {
-				requestID = "unknown"
+// Logging returns middleware that logs one structured record per request.
+func Logging(clientIP func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+
+			next.ServeHTTP(rec, r)
+
+			fields := map[string]any{
+				"method":      r.Method,
+				"path":        RedactPath(r.URL.Path),
+				"status":      rec.statusCode,
+				"duration_ms": time.Since(start).Milliseconds(),
+				"size":        rec.size,
+				"client_ip":   clientIP(r),
+				"user_agent":  r.UserAgent(),
 			}
-		}
 
-		// Set request ID in response header
-		w.Header().Set("X-Request-ID", requestID)
+			if authKey := APIKeyFromContext(r.Context()); authKey != nil {
+				fields["api_key"] = authKey.KeyPrefix
+			}
+			if r.URL.RawQuery != "" {
+				fields["query"] = redactQuery(r.URL.RawQuery)
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			logger := util.GetDefaultLogger().WithFields(fields)
+			switch {
+			case rec.statusCode >= 500:
+				logger.Error("HTTP request")
+			case rec.statusCode >= 400:
+				logger.Warn("HTTP request")
+			default:
+				logger.Info("HTTP request")
+			}
+		})
+	}
 }
 
-// Helper function to generate request IDs (moved here to avoid import cycle)
-func generateRequestID() (string, error) {
-	// Use crypto/tokens helper
-	return util.GenerateRequestID()
+// redactedTokenPrefixes are URL path segments after which the next segment is a
+// single-use approval credential.
+var redactedTokenPrefixes = []string{
+	"/api/callback/approve/",
+	"/api/callback/deny/",
+	"/api/callback/suggest/",
+	"/approve/",
+}
+
+// RedactPath removes decision tokens from a URL path.
+//
+// Approval links carry a single-use credential in the path. Logging them
+// verbatim would leave working approval tokens sitting in log aggregators and
+// proxy logs for anyone with read access to replay.
+func RedactPath(path string) string {
+	for _, prefix := range redactedTokenPrefixes {
+		if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
+			return prefix + "[redacted]"
+		}
+	}
+	return path
+}
+
+// sensitiveQueryParams are query parameter names whose values must never reach
+// the logs: credentials, one-time codes, and free text supplied by the operator.
+var sensitiveQueryParams = map[string]bool{
+	"token":      true,
+	"code":       true,
+	"secret":     true,
+	"key":        true,
+	"created":    true,
+	"pin":        true,
+	"password":   true,
+	"state":      true,
+	"suggestion": true,
+}
+
+// redactQuery removes the values of sensitive query parameters.
+func redactQuery(rawQuery string) string {
+	parts := strings.Split(rawQuery, "&")
+	for i, part := range parts {
+		name, _, found := strings.Cut(part, "=")
+		if !found {
+			continue
+		}
+		if sensitiveQueryParams[strings.ToLower(name)] {
+			parts[i] = name + "=[redacted]"
+		}
+	}
+	return strings.Join(parts, "&")
 }

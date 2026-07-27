@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,45 +13,55 @@ import (
 	"github.com/dtorcivia/schedlock/internal/util"
 )
 
-// Manager handles multi-provider notification delivery.
+// ErrProviderNotFound is returned when an unknown provider is addressed.
+var ErrProviderNotFound = errors.New("notification provider not found")
+
+// BaseURLProvider supplies the current public base URL, which changes when the
+// operator edits it in settings.
+type BaseURLProvider func() string
+
+// Manager fans approval notifications out to every enabled provider and records
+// what was delivered.
 type Manager struct {
-	db        *database.DB
-	config    *config.Config
-	providers []Provider
+	db      *database.DB
+	store   *CredentialsStore
+	baseURL BaseURLProvider
+
 	mu        sync.RWMutex
+	providers []Provider
+	// fallback holds the static (file/environment) configuration used when a
+	// provider has no stored credentials.
+	fallback config.NotificationsConfig
 }
 
-// NewManager creates a new notification manager.
-func NewManager(db *database.DB, cfg *config.Config) *Manager {
+// NewManager creates a notification manager.
+func NewManager(db *database.DB, store *CredentialsStore, fallback config.NotificationsConfig, baseURL BaseURLProvider) *Manager {
 	return &Manager{
-		db:        db,
-		config:    cfg,
-		providers: make([]Provider, 0),
+		db:       db,
+		store:    store,
+		baseURL:  baseURL,
+		fallback: fallback,
 	}
 }
 
-// RegisterProvider adds a notification provider.
+// RegisterProvider adds a provider to the fan-out set.
 func (m *Manager) RegisterProvider(p Provider) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.providers = append(m.providers, p)
-	util.Info("Registered notification provider", "provider", p.Name(), "enabled", p.Enabled())
 }
 
-// GetProviders returns all registered providers.
-func (m *Manager) GetProviders() []Provider {
+// Providers returns every registered provider.
+func (m *Manager) Providers() []Provider {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.providers
+	return append([]Provider(nil), m.providers...)
 }
 
-// GetEnabledProviders returns only enabled providers.
-func (m *Manager) GetEnabledProviders() []Provider {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+// EnabledProviders returns the providers currently configured to deliver.
+func (m *Manager) EnabledProviders() []Provider {
 	var enabled []Provider
-	for _, p := range m.providers {
+	for _, p := range m.Providers() {
 		if p.Enabled() {
 			enabled = append(enabled, p)
 		}
@@ -58,89 +69,9 @@ func (m *Manager) GetEnabledProviders() []Provider {
 	return enabled
 }
 
-// SendApprovalRequest sends approval notifications to all enabled providers.
-func (m *Manager) SendApprovalRequest(ctx context.Context, notification *ApprovalNotification) error {
-	providers := m.GetEnabledProviders()
-	if len(providers) == 0 {
-		util.Warn("No notification providers enabled")
-		return nil
-	}
-
-	m.populateApprovalURLs(notification)
-
-	var lastErr error
-	successCount := 0
-
-	for _, provider := range providers {
-		messageID, err := provider.SendApproval(ctx, notification)
-		if err != nil {
-			util.Error("Failed to send notification",
-				"provider", provider.Name(),
-				"request_id", notification.RequestID,
-				"error", err,
-			)
-			lastErr = err
-			m.logNotification(ctx, notification.RequestID, provider.Name(), "", database.NotificationFailed, err.Error())
-			continue
-		}
-
-		m.logNotification(ctx, notification.RequestID, provider.Name(), messageID, database.NotificationSent, "")
-		successCount++
-
-		util.Info("Sent approval notification",
-			"provider", provider.Name(),
-			"request_id", notification.RequestID,
-			"message_id", messageID,
-		)
-	}
-
-	if successCount == 0 && lastErr != nil {
-		return fmt.Errorf("all notification providers failed: %w", lastErr)
-	}
-
-	return nil
-}
-
-// SendResult sends result notifications to all enabled providers.
-func (m *Manager) SendResult(ctx context.Context, notification *ResultNotification) error {
-	providers := m.GetEnabledProviders()
-
-	for _, provider := range providers {
-		if err := provider.SendResult(ctx, notification); err != nil {
-			util.Error("Failed to send result notification",
-				"provider", provider.Name(),
-				"request_id", notification.RequestID,
-				"error", err,
-			)
-		}
-	}
-
-	return nil
-}
-
-// TestProvider sends a test notification to a specific provider.
-func (m *Manager) TestProvider(ctx context.Context, providerName string) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, p := range m.providers {
-		if p.Name() == providerName {
-			if !p.Enabled() {
-				return fmt.Errorf("provider %s is not enabled", providerName)
-			}
-			return p.SendTest(ctx)
-		}
-	}
-
-	return fmt.Errorf("provider %s not found", providerName)
-}
-
-// GetProviderByName returns a provider by name.
-func (m *Manager) GetProviderByName(name string) Provider {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, p := range m.providers {
+// ProviderByName returns a registered provider, or nil.
+func (m *Manager) ProviderByName(name string) Provider {
+	for _, p := range m.Providers() {
 		if p.Name() == name {
 			return p
 		}
@@ -148,166 +79,253 @@ func (m *Manager) GetProviderByName(name string) Provider {
 	return nil
 }
 
-// populateApprovalURLs fills in callback and review URLs if missing.
-func (m *Manager) populateApprovalURLs(notification *ApprovalNotification) {
-	if notification == nil {
+// Reload applies stored credentials to every provider.
+//
+// Notification settings are edited through the web UI at runtime. Without this
+// step a provider would keep using whatever configuration existed at startup,
+// so enabling a channel or rotating a token would appear to succeed but change
+// nothing until the process restarted.
+func (m *Manager) Reload(ctx context.Context) error {
+	stored := map[string]*ProviderCredentials{}
+	if m.store != nil {
+		loaded, err := m.store.LoadAll(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to load notification credentials: %w", err)
+		}
+		stored = loaded
+	}
+
+	for _, provider := range m.Providers() {
+		name := provider.Name()
+		creds, ok := stored[name]
+		if !ok || creds.Credentials == nil {
+			// Nothing stored: fall back to file/environment configuration so a
+			// deployment configured purely by environment still works.
+			creds = m.fallbackFor(name)
+		}
+		provider.Configure(creds)
+
+		util.Debug("Configured notification provider", "provider", name, "enabled", provider.Enabled())
+	}
+
+	return nil
+}
+
+// fallbackFor converts static configuration into a credentials snapshot.
+func (m *Manager) fallbackFor(name string) *ProviderCredentials {
+	switch name {
+	case ProviderNtfy:
+		c := m.fallback.Ntfy
+		return &ProviderCredentials{
+			Provider: name,
+			Enabled:  c.Enabled,
+			Credentials: &NtfyCredentials{
+				ServerURL:      c.Server,
+				Topic:          c.Topic,
+				Token:          c.Token,
+				Priority:       c.Priority,
+				MinimalContent: c.MinimalContent,
+			},
+		}
+	case ProviderPushover:
+		c := m.fallback.Pushover
+		return &ProviderCredentials{
+			Provider: name,
+			Enabled:  c.Enabled,
+			Credentials: &PushoverCredentials{
+				AppToken: c.AppToken,
+				UserKey:  c.UserKey,
+				Priority: c.Priority,
+				Sound:    c.Sound,
+			},
+		}
+	case ProviderTelegram:
+		c := m.fallback.Telegram
+		return &ProviderCredentials{
+			Provider: name,
+			Enabled:  c.Enabled,
+			Credentials: &TelegramCredentials{
+				BotToken:      c.BotToken,
+				ChatID:        c.ChatID,
+				WebhookSecret: c.WebhookSecret,
+			},
+		}
+	case ProviderWebhook:
+		c := m.fallback.Webhook
+		return &ProviderCredentials{
+			Provider: name,
+			Enabled:  c.Enabled,
+			Credentials: &WebhookCredentials{
+				URL:            c.URL,
+				Secret:         c.Secret,
+				TimeoutSeconds: c.TimeoutSeconds,
+			},
+		}
+	default:
+		return &ProviderCredentials{Provider: name}
+	}
+}
+
+// SendApprovalRequest delivers an approval request to every enabled provider.
+//
+// Delivery is best-effort per provider: one channel being down must not stop
+// the others from reaching the approver. An error is returned only when no
+// provider succeeded.
+func (m *Manager) SendApprovalRequest(ctx context.Context, notification *ApprovalNotification) error {
+	providers := m.EnabledProviders()
+	if len(providers) == 0 {
+		util.Warn("No notification providers enabled; approval is only reachable in the web UI",
+			"request_id", notification.RequestID)
+		return nil
+	}
+
+	m.populateURLs(notification)
+
+	var (
+		lastErr      error
+		successCount int
+	)
+
+	for _, provider := range providers {
+		messageID, err := provider.SendApproval(ctx, notification)
+		if err != nil {
+			util.Error("Failed to send notification",
+				"provider", provider.Name(), "request_id", notification.RequestID, "error", err)
+			lastErr = err
+			m.logDelivery(ctx, notification.RequestID, provider.Name(), "", database.NotificationFailed, err.Error())
+			continue
+		}
+
+		m.logDelivery(ctx, notification.RequestID, provider.Name(), messageID, database.NotificationSent, "")
+		successCount++
+
+		util.Info("Sent approval notification",
+			"provider", provider.Name(), "request_id", notification.RequestID, "message_id", messageID)
+	}
+
+	if successCount == 0 && lastErr != nil {
+		return fmt.Errorf("all notification providers failed: %w", lastErr)
+	}
+	return nil
+}
+
+// SendResult reports the outcome of a request to every enabled provider, so an
+// approver learns whether the operation they authorized actually succeeded.
+func (m *Manager) SendResult(ctx context.Context, notification *ResultNotification) {
+	for _, provider := range m.EnabledProviders() {
+		if err := provider.SendResult(ctx, notification); err != nil {
+			util.Warn("Failed to send result notification",
+				"provider", provider.Name(), "request_id", notification.RequestID, "error", err)
+		}
+	}
+}
+
+// TestProvider sends a test notification through one provider.
+func (m *Manager) TestProvider(ctx context.Context, providerName string) error {
+	provider := m.ProviderByName(providerName)
+	if provider == nil {
+		return fmt.Errorf("%w: %s", ErrProviderNotFound, providerName)
+	}
+	if !provider.Enabled() {
+		return fmt.Errorf("provider %s is not enabled", providerName)
+	}
+	return provider.SendTest(ctx)
+}
+
+// populateURLs fills in the action links a notification offers.
+func (m *Manager) populateURLs(notification *ApprovalNotification) {
+	if notification == nil || m.baseURL == nil {
 		return
 	}
 
-	baseURL := strings.TrimRight(m.config.Server.BaseURL, "/")
+	baseURL := strings.TrimRight(m.baseURL(), "/")
 	if baseURL == "" {
 		return
 	}
 
-	if notification.WebURL == "" {
-		notification.WebURL = fmt.Sprintf("%s/requests/%s", baseURL, notification.RequestID)
-	}
+	notification.WebURL = fmt.Sprintf("%s/requests/%s", baseURL, notification.RequestID)
 
 	if notification.DecisionToken == "" {
 		return
 	}
 
-	// API callback URLs (for background HTTP actions like ntfy)
-	if notification.ApproveURL == "" {
-		notification.ApproveURL = fmt.Sprintf("%s/api/callback/approve/%s", baseURL, notification.DecisionToken)
-	}
-	if notification.DenyURL == "" {
-		notification.DenyURL = fmt.Sprintf("%s/api/callback/deny/%s", baseURL, notification.DecisionToken)
-	}
-	if notification.SuggestURL == "" {
-		notification.SuggestURL = fmt.Sprintf("%s/api/callback/suggest/%s", baseURL, notification.DecisionToken)
-	}
-	// Public approval page URL (for browser links like Pushover)
-	if notification.ApprovePageURL == "" {
-		notification.ApprovePageURL = fmt.Sprintf("%s/approve/%s", baseURL, notification.DecisionToken)
-	}
+	// Direct-action endpoints, for clients that POST from a notification action.
+	notification.ApproveURL = fmt.Sprintf("%s/api/callback/approve/%s", baseURL, notification.DecisionToken)
+	notification.DenyURL = fmt.Sprintf("%s/api/callback/deny/%s", baseURL, notification.DecisionToken)
+	notification.SuggestURL = fmt.Sprintf("%s/api/callback/suggest/%s", baseURL, notification.DecisionToken)
+	// The page a human opens, which shows the request before asking to confirm.
+	notification.ApprovePageURL = fmt.Sprintf("%s/approve/%s", baseURL, notification.DecisionToken)
 }
 
-// logNotification logs a notification to the database.
-func (m *Manager) logNotification(ctx context.Context, requestID, provider, messageID, status, errorMsg string) {
-	_, err := m.db.ExecContext(ctx, `
+// logDelivery records a delivery attempt.
+func (m *Manager) logDelivery(ctx context.Context, requestID, provider, messageID, status, errorMsg string) {
+	if _, err := m.db.ExecContext(context.WithoutCancel(ctx), `
 		INSERT INTO notification_log (request_id, provider, status, message_id, error)
 		VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
-	`, requestID, provider, status, messageID, errorMsg)
-
-	if err != nil {
-		util.Error("Failed to log notification", "error", err)
+	`, requestID, provider, status, messageID, errorMsg); err != nil {
+		util.Error("Failed to log notification delivery", "error", err, "provider", provider)
 	}
 }
 
-// GetNotificationLog retrieves notification logs for a request.
-func (m *Manager) GetNotificationLog(ctx context.Context, requestID string) ([]NotificationLog, error) {
-	rows, err := m.db.QueryContext(ctx, `
-		SELECT id, request_id, provider, status, message_id, sent_at, callback_at, error, response
-		FROM notification_log
-		WHERE request_id = ?
-		ORDER BY sent_at DESC
-	`, requestID)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var logs []NotificationLog
-	for rows.Next() {
-		var log NotificationLog
-		var messageID, errorMsg sql.NullString
-		var sentAt, callbackAt sql.NullString
-		var response sql.NullString
-
-		if err := rows.Scan(
-			&log.ID, &log.RequestID, &log.Provider, &log.Status,
-			&messageID, &sentAt, &callbackAt, &errorMsg, &response,
-		); err != nil {
-			return nil, err
-		}
-
-		if messageID.Valid {
-			log.MessageID = messageID.String
-		}
-		if errorMsg.Valid {
-			log.ErrorMessage = errorMsg.String
-		}
-		if sentAt.Valid {
-			log.SentAt, _ = util.ParseSQLiteTimestamp(sentAt.String)
-		}
-		if callbackAt.Valid {
-			t, _ := util.ParseSQLiteTimestamp(callbackAt.String)
-			log.CallbackAt = &t
-		}
-		if response.Valid {
-			log.Response = []byte(response.String)
-		}
-
-		logs = append(logs, log)
-	}
-
-	return logs, rows.Err()
-}
-
-// FindByMessageID finds a notification log by provider and message ID.
-func (m *Manager) FindByMessageID(ctx context.Context, provider, messageID string) (*NotificationLog, error) {
-	var log NotificationLog
-	var msgID, errorMsg sql.NullString
-	var sentAt, callbackAt sql.NullString
-	var response sql.NullString
-
-	err := m.db.QueryRowContext(ctx, `
-		SELECT id, request_id, provider, status, message_id, sent_at, callback_at, error, response
-		FROM notification_log
-		WHERE provider = ? AND message_id = ?
-	`, provider, messageID).Scan(
-		&log.ID, &log.RequestID, &log.Provider, &log.Status,
-		&msgID, &sentAt, &callbackAt, &errorMsg, &response,
+// FindByMessageID locates the delivery record for a provider message, which is
+// how a chat reply is matched back to the request it concerns.
+func (m *Manager) FindByMessageID(ctx context.Context, provider, messageID string) (*DeliveryRecord, error) {
+	var (
+		record  DeliveryRecord
+		msgID   sql.NullString
+		sentAt  sql.NullString
+		callbck sql.NullString
+		errMsg  sql.NullString
 	)
 
-	if err == sql.ErrNoRows {
+	err := m.db.QueryRowContext(ctx, `
+		SELECT id, request_id, provider, status, message_id, sent_at, callback_at, error
+		FROM notification_log
+		WHERE provider = ? AND message_id = ?
+		ORDER BY sent_at DESC
+		LIMIT 1
+	`, provider, messageID).Scan(
+		&record.ID, &record.RequestID, &record.Provider, &record.Status,
+		&msgID, &sentAt, &callbck, &errMsg,
+	)
+
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	if msgID.Valid {
-		log.MessageID = msgID.String
+	record.MessageID = msgID.String
+	record.ErrorMessage = errMsg.String
+	if ts := database.NullTimeText(sentAt); ts.Valid {
+		record.SentAt = ts.Time
 	}
-	if errorMsg.Valid {
-		log.ErrorMessage = errorMsg.String
-	}
-	if sentAt.Valid {
-		log.SentAt, _ = util.ParseSQLiteTimestamp(sentAt.String)
-	}
-	if callbackAt.Valid {
-		t, _ := util.ParseSQLiteTimestamp(callbackAt.String)
-		log.CallbackAt = &t
-	}
-	if response.Valid {
-		log.Response = []byte(response.String)
+	if ts := database.NullTimeText(callbck); ts.Valid {
+		t := ts.Time
+		record.CallbackAt = &t
 	}
 
-	return &log, nil
+	return &record, nil
 }
 
-// MarkCallback marks a notification as having received a callback.
+// MarkCallback records that a decision arrived through a provider.
 func (m *Manager) MarkCallback(ctx context.Context, provider, requestID, messageID string) {
-	if provider == "" {
+	if provider == "" || requestID == "" {
 		return
 	}
 
-	query := `
+	if _, err := m.db.ExecContext(context.WithoutCancel(ctx), `
 		UPDATE notification_log
 		SET status = ?, callback_at = datetime('now')
 		WHERE id = (
 			SELECT id FROM notification_log
 			WHERE provider = ? AND request_id = ?
-			AND (message_id = ? OR ? = '')
+			AND (? = '' OR message_id = ?)
 			ORDER BY sent_at DESC
 			LIMIT 1
 		)
-	`
-	_, err := m.db.ExecContext(ctx, query, database.NotificationCallbackReceived, provider, requestID, messageID, messageID)
-	if err != nil {
+	`, database.NotificationCallbackReceived, provider, requestID, messageID, messageID); err != nil {
 		util.Error("Failed to mark notification callback", "error", err)
 	}
 }

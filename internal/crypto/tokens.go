@@ -1,4 +1,4 @@
-// Package crypto provides token generation for decision callbacks.
+// Package crypto provides identifier and token generation.
 package crypto
 
 import (
@@ -7,103 +7,58 @@ import (
 	"fmt"
 )
 
-// GenerateDecisionToken creates a secure random token for approval callbacks.
-// Returns the token (to be used in URLs) and its hash (to be stored in DB).
-// Format: dtok_{base62_encoded_16_bytes}
+// GenerateDecisionToken creates a single-use approval token and the hash to be
+// stored alongside the request. The token carries ~155 bits of entropy, so it
+// cannot be guessed by anyone holding an approval URL's shape.
 func GenerateDecisionToken() (token string, hash string, err error) {
-	// Generate 16 bytes (128 bits) of random data
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-
-	// Encode as base62
-	encoded, err := bytesToBase62(randomBytes)
+	random, err := RandomBase62(26)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to generate decision token: %w", err)
 	}
 
-	token = "dtok_" + encoded
-	hash = HashSHA256(token)
-
-	return token, hash, nil
+	token = "dtok_" + random
+	return token, HashSHA256(token), nil
 }
 
-// GenerateSessionID creates a secure random session ID.
-// Returns base64-encoded 32 bytes.
+// GenerateSessionID creates a session identifier (256 bits, URL-safe).
 func GenerateSessionID() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("failed to generate session ID: %w", err)
-	}
-	return base64.URLEncoding.EncodeToString(bytes), nil
+	return randomURLSafe(32)
 }
 
-// GenerateCSRFToken creates a secure random CSRF token.
-// Returns base64-encoded 32 bytes.
+// GenerateCSRFToken creates a CSRF token (256 bits, URL-safe).
 func GenerateCSRFToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("failed to generate CSRF token: %w", err)
-	}
-	return base64.URLEncoding.EncodeToString(bytes), nil
+	return randomURLSafe(32)
 }
 
-// GenerateWebhookID creates a unique ID for webhook delivery tracking.
-// Format: whk_{base62_16_chars}
+// GenerateWebhookID creates an identifier for a webhook delivery attempt.
 func GenerateWebhookID() (string, error) {
-	randomBytes := make([]byte, 12)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to generate webhook ID: %w", err)
-	}
-
-	encoded, err := bytesToBase62(randomBytes)
-	if err != nil {
-		return "", err
-	}
-
-	return "whk_" + encoded, nil
+	return GenerateNanoID("whk_", 16)
 }
 
-// bytesToBase62 converts bytes to base62 string.
-func bytesToBase62(data []byte) (string, error) {
-	result := make([]byte, len(data)*2) // Approximate size
-	idx := 0
-
-	for _, b := range data {
-		// Use modulo to map each byte to base62 chars
-		// This isn't perfectly uniform but is sufficient for token generation
-		result[idx] = base62Chars[b%62]
-		idx++
-	}
-
-	return string(result[:idx]), nil
-}
-
-// GenerateNanoID creates a short unique ID with prefix.
-// Used for request IDs, API key IDs, etc.
-func GenerateNanoID(prefix string, length int) (string, error) {
-	randomBytes := make([]byte, length)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to generate nanoid: %w", err)
-	}
-
-	result := make([]byte, length)
-	for i := 0; i < length; i++ {
-		result[i] = base62Chars[randomBytes[i]%62]
-	}
-
-	return prefix + string(result), nil
-}
-
-// Convenience functions for common ID types
-
-// GenerateRequestID creates a request ID (req_ prefix).
+// GenerateRequestID creates a request identifier.
 func GenerateRequestID() (string, error) {
 	return GenerateNanoID("req_", 16)
 }
 
-// GenerateAPIKeyID creates an API key ID (key_ prefix).
+// GenerateAPIKeyID creates an API key identifier.
 func GenerateAPIKeyID() (string, error) {
 	return GenerateNanoID("key_", 16)
+}
+
+// GenerateNanoID creates a prefixed identifier with length random base62
+// characters.
+func GenerateNanoID(prefix string, length int) (string, error) {
+	random, err := RandomBase62(length)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate id: %w", err)
+	}
+	return prefix + random, nil
+}
+
+func randomURLSafe(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

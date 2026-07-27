@@ -1,92 +1,80 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/dtorcivia/schedlock/internal/database"
+	"github.com/dtorcivia/schedlock/internal/requests"
 	"github.com/dtorcivia/schedlock/internal/response"
 )
 
-// ListRequests returns requests for the authenticated API key.
+// ListRequests returns the calling key's recent requests.
 func (h *Handler) ListRequests(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
-	ctx := r.Context()
-	requests, err := h.requestRepo.GetByAPIKeyID(ctx, authKey.ID, 50)
+	records, err := h.requestRepo.GetByAPIKeyID(r.Context(), authKey.ID, parseLimit(r, 50, 200))
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to list requests", err)
+		response.WriteInternalError(w, "Failed to list requests", err)
 		return
 	}
 
-	// Convert to response format
-	var items []map[string]interface{}
-	for _, req := range requests {
-		item := map[string]interface{}{
+	// An empty result is rendered as [] rather than null, so clients can
+	// iterate the field unconditionally.
+	items := make([]map[string]any, 0, len(records))
+	for _, req := range records {
+		item := map[string]any{
 			"id":         req.ID,
 			"operation":  req.Operation,
 			"status":     req.Status,
 			"created_at": req.CreatedAt,
 			"expires_at": req.ExpiresAt,
 		}
-
 		if req.DecidedAt.Valid {
 			item["decided_at"] = req.DecidedAt.Time
 		}
-		if req.DecidedBy.Valid {
-			item["decided_by"] = req.DecidedBy.String
-		}
+		addIfValid(item, "decided_by", req.DecidedBy)
 		if req.ExecutedAt.Valid {
 			item["executed_at"] = req.ExecutedAt.Time
 		}
-		if req.Error.Valid {
-			item["error"] = req.Error.String
-		}
-		if req.SuggestionText.Valid {
-			item["suggestion"] = req.SuggestionText.String
-		}
-
+		addIfValid(item, "error", req.Error)
+		addIfValid(item, "suggestion", req.SuggestionText)
 		items = append(items, item)
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"requests": items,
-	})
+	response.JSON(w, http.StatusOK, map[string]any{"requests": items})
 }
 
-// GetRequest returns a specific request.
+// GetRequest returns one request belonging to the calling key.
 func (h *Handler) GetRequest(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "read")
+	authKey := requireTier(w, r, database.TierRead)
 	if authKey == nil {
 		return
 	}
 
 	requestID := r.PathValue("requestId")
 	if requestID == "" {
-		response.Error(w, http.StatusBadRequest, "request ID required", nil)
+		response.WriteValidationError(w, "requestId is required")
 		return
 	}
 
-	ctx := r.Context()
-	req, err := h.requestRepo.GetByID(ctx, requestID)
+	req, err := h.requestRepo.GetByID(r.Context(), requestID)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "failed to get request", err)
+		response.WriteInternalError(w, "Failed to read the request", err)
 		return
 	}
 
-	if req == nil {
-		response.Error(w, http.StatusNotFound, "request not found", nil)
+	// A request belonging to another key is reported as missing rather than
+	// forbidden, so an unrelated caller cannot probe for valid request IDs.
+	if req == nil || (req.APIKeyID != authKey.ID && authKey.Tier != database.TierAdmin) {
+		response.WriteRequestNotFound(w, requestID)
 		return
 	}
 
-	// Only allow access to own requests (unless admin)
-	if req.APIKeyID != authKey.ID && authKey.Tier != "admin" {
-		response.Error(w, http.StatusForbidden, "access denied", nil)
-		return
-	}
-
-	resp := map[string]interface{}{
+	body := map[string]any{
 		"id":          req.ID,
 		"operation":   req.Operation,
 		"status":      req.Status,
@@ -95,54 +83,53 @@ func (h *Handler) GetRequest(w http.ResponseWriter, r *http.Request) {
 		"expires_at":  req.ExpiresAt,
 		"retry_count": req.RetryCount,
 	}
-
-	if req.Result != nil {
-		resp["result"] = req.Result
+	if len(req.Result) > 0 {
+		body["result"] = req.Result
 	}
 	if req.DecidedAt.Valid {
-		resp["decided_at"] = req.DecidedAt.Time
+		body["decided_at"] = req.DecidedAt.Time
 	}
-	if req.DecidedBy.Valid {
-		resp["decided_by"] = req.DecidedBy.String
-	}
+	addIfValid(body, "decided_by", req.DecidedBy)
 	if req.ExecutedAt.Valid {
-		resp["executed_at"] = req.ExecutedAt.Time
+		body["executed_at"] = req.ExecutedAt.Time
 	}
-	if req.Error.Valid {
-		resp["error"] = req.Error.String
-	}
+	addIfValid(body, "error", req.Error)
 	if req.SuggestionText.Valid {
-		resp["suggestion"] = map[string]interface{}{
-			"text":         req.SuggestionText.String,
-			"suggested_by": req.SuggestionBy.String,
-			"suggested_at": req.SuggestionAt.Time,
+		suggestion := map[string]any{"text": req.SuggestionText.String}
+		addIfValid(suggestion, "suggested_by", req.SuggestionBy)
+		if req.SuggestionAt.Valid {
+			suggestion["suggested_at"] = req.SuggestionAt.Time
 		}
+		body["suggestion"] = suggestion
 	}
 
-	response.JSON(w, http.StatusOK, resp)
+	response.JSON(w, http.StatusOK, body)
 }
 
-// CancelRequest cancels a pending request.
+// CancelRequest withdraws a pending request.
 func (h *Handler) CancelRequest(w http.ResponseWriter, r *http.Request) {
-	authKey := requireTier(w, r, "write")
+	authKey := requireTier(w, r, database.TierWrite)
 	if authKey == nil {
 		return
 	}
 
 	requestID := r.PathValue("requestId")
 	if requestID == "" {
-		response.Error(w, http.StatusBadRequest, "request ID required", nil)
+		response.WriteValidationError(w, "requestId is required")
 		return
 	}
 
-	ctx := r.Context()
-	err := h.engine.CancelRequest(ctx, requestID, authKey.ID)
-	if err != nil {
-		response.Error(w, http.StatusBadRequest, err.Error(), nil)
+	if err := h.engine.CancelRequest(r.Context(), requestID, authKey.ID); err != nil {
+		if errors.Is(err, requests.ErrNotPending) {
+			response.WriteConflict(w, "Request not found or no longer pending", requestID, nil)
+			return
+		}
+		response.WriteInternalError(w, "Failed to cancel the request", err, "request_id", requestID)
 		return
 	}
 
-	response.JSON(w, http.StatusOK, map[string]interface{}{
-		"message": "request cancelled",
+	response.JSON(w, http.StatusOK, map[string]any{
+		"message":    "Request cancelled",
+		"request_id": requestID,
 	})
 }

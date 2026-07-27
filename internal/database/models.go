@@ -20,19 +20,29 @@ type APIKey struct {
 	ExpiresAt         sql.NullTime
 	RevokedAt         sql.NullTime
 	RateLimitOverride sql.NullInt64
-	Metadata          json.RawMessage
 }
 
 // KeyConstraints defines per-key policy restrictions.
 type KeyConstraints struct {
 	CalendarAllowlist       []string          `json:"calendar_allowlist,omitempty"`
-	Operations              map[string]string `json:"operations,omitempty"` // "create_event": "require_approval"
+	Operations              map[string]string `json:"operations,omitempty"` // e.g. "create_event": "require_approval"
 	MaxDurationMinutes      int               `json:"max_duration_minutes,omitempty"`
 	AttendeeDomainAllowlist []string          `json:"attendee_domain_allowlist,omitempty"`
 	AllowExternalAttendees  *bool             `json:"allow_external_attendees,omitempty"`
 	MaxAttendees            int               `json:"max_attendees,omitempty"`
 	BlockAllDayEvents       bool              `json:"block_all_day_events,omitempty"`
 }
+
+// Operation policy values usable in KeyConstraints.Operations.
+const (
+	// OperationPolicyDeny rejects the operation outright.
+	OperationPolicyDeny = "deny"
+	// OperationPolicyRequireApproval forces human approval regardless of tier.
+	OperationPolicyRequireApproval = "require_approval"
+	// OperationPolicyAuto executes without approval, subject to the remaining
+	// constraints.
+	OperationPolicyAuto = "auto"
+)
 
 // Request represents a calendar operation request.
 type Request struct {
@@ -55,27 +65,27 @@ type Request struct {
 	WebhookNotifiedAt sql.NullTime
 }
 
-// RequestStatus constants
+// Request status values.
 const (
-	StatusPendingApproval  = "pending_approval"
-	StatusChangeRequested  = "change_requested"
-	StatusApproved         = "approved"
-	StatusDenied           = "denied"
-	StatusExpired          = "expired"
-	StatusCancelled        = "cancelled"
-	StatusExecuting        = "executing"
-	StatusCompleted        = "completed"
-	StatusFailed           = "failed"
+	StatusPendingApproval = "pending_approval"
+	StatusChangeRequested = "change_requested"
+	StatusApproved        = "approved"
+	StatusDenied          = "denied"
+	StatusExpired         = "expired"
+	StatusCancelled       = "cancelled"
+	StatusExecuting       = "executing"
+	StatusCompleted       = "completed"
+	StatusFailed          = "failed"
 )
 
-// Operation constants
+// Operation values.
 const (
 	OperationCreateEvent = "create_event"
 	OperationUpdateEvent = "update_event"
 	OperationDeleteEvent = "delete_event"
 )
 
-// Tier constants
+// API key tiers.
 const (
 	TierRead  = "read"
 	TierWrite = "write"
@@ -94,108 +104,41 @@ type AuditLogEntry struct {
 	IPAddress sql.NullString
 }
 
-// Audit event types
+// Audit event types.
 const (
-	AuditAPIKeyCreated     = "api_key_created"
-	AuditAPIKeyRevoked     = "api_key_revoked"
-	AuditAPIKeyUsed        = "api_key_used"
-	AuditRequestCreated    = "request_created"
-	AuditRequestApproved   = "request_approved"
-	AuditRequestDenied     = "request_denied"
-	AuditRequestExpired    = "request_expired"
-	AuditRequestChanged    = "request_change_requested"
-	AuditRequestCancelled  = "request_cancelled"
-	AuditRequestExecuting  = "request_executing"
-	AuditRequestCompleted  = "request_completed"
-	AuditRequestFailed     = "request_failed"
-	AuditNotificationSent  = "notification_sent"
+	AuditAPIKeyCreated      = "api_key_created"
+	AuditAPIKeyRevoked      = "api_key_revoked"
+	AuditRequestCreated     = "request_created"
+	AuditRequestApproved    = "request_approved"
+	AuditRequestDenied      = "request_denied"
+	AuditRequestExpired     = "request_expired"
+	AuditRequestChanged     = "request_change_requested"
+	AuditRequestCancelled   = "request_cancelled"
+	AuditRequestEdited      = "request_edited"
+	AuditRequestExecuting   = "request_executing"
+	AuditRequestCompleted   = "request_completed"
+	AuditRequestFailed      = "request_failed"
+	AuditNotificationSent   = "notification_sent"
 	AuditNotificationFailed = "notification_failed"
-	AuditCallbackReceived  = "callback_received"
-	AuditSettingsChanged   = "settings_changed"
-	AuditOAuthConnected    = "oauth_connected"
-	AuditOAuthRefreshed    = "oauth_refreshed"
-	AuditOAuthFailed       = "oauth_failed"
-	AuditLoginSuccess      = "login_success"
-	AuditLoginFailed       = "login_failed"
-	AuditSessionCreated    = "session_created"
-	AuditSessionExpired    = "session_expired"
+	AuditSettingsChanged    = "settings_changed"
+	AuditOAuthConnected     = "oauth_connected"
+	AuditOAuthFailed        = "oauth_failed"
+	AuditLoginSuccess       = "login_success"
+	AuditLoginFailed        = "login_failed"
+	AuditLogout             = "logout"
 )
 
-// NotificationLog represents a notification delivery record.
-type NotificationLog struct {
-	ID         int64
-	RequestID  string
-	Provider   string
-	Status     string
-	SentAt     time.Time
-	CallbackAt sql.NullTime
-	Error      sql.NullString
-	Response   json.RawMessage
-	MessageID  sql.NullString
-}
-
-// Notification providers
+// Notification providers.
 const (
 	ProviderNtfy     = "ntfy"
 	ProviderPushover = "pushover"
 	ProviderTelegram = "telegram"
+	ProviderWebhook  = "webhook"
 )
 
-// Notification statuses
+// Notification delivery statuses.
 const (
-	NotificationPending          = "pending"
 	NotificationSent             = "sent"
 	NotificationFailed           = "failed"
 	NotificationCallbackReceived = "callback_received"
 )
-
-// Session represents a web UI session.
-type Session struct {
-	ID           string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	LastActivity sql.NullTime
-	IPAddress    sql.NullString
-	UserAgent    sql.NullString
-	CSRFToken    string
-}
-
-// DecisionToken represents a single-use approval token.
-type DecisionToken struct {
-	TokenHash      string
-	RequestID      string
-	AllowedActions []string
-	ExpiresAt      time.Time
-	ConsumedAt     sql.NullTime
-	ConsumedAction sql.NullString
-	CreatedAt      time.Time
-}
-
-// WebhookFailure represents a failed Moltbot webhook delivery.
-type WebhookFailure struct {
-	ID         int64
-	WebhookID  string
-	RequestID  string
-	Status     string
-	Payload    json.RawMessage
-	Error      sql.NullString
-	Attempts   int
-	CreatedAt  time.Time
-	ResolvedAt sql.NullTime
-}
-
-// Setting represents a configuration setting.
-type Setting struct {
-	Key       string
-	Value     json.RawMessage
-	UpdatedAt time.Time
-}
-
-// OAuthToken represents stored OAuth credentials.
-type OAuthToken struct {
-	ID              string
-	RefreshTokenEnc []byte
-	Scopes          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}

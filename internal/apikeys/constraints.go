@@ -1,4 +1,4 @@
-// Package apikeys provides constraint evaluation for API keys.
+// Package apikeys provides per-key policy evaluation.
 package apikeys
 
 import (
@@ -9,222 +9,208 @@ import (
 	"github.com/dtorcivia/schedlock/internal/database"
 )
 
-// ConstraintResult represents the result of constraint evaluation.
+// ConstraintResult is the decision produced by evaluating a key's policy.
 type ConstraintResult int
 
 const (
-	// ConstraintAllow means the operation is allowed.
+	// ConstraintAllow executes the operation without human approval.
 	ConstraintAllow ConstraintResult = iota
-	// ConstraintRequireApproval means the operation needs human approval.
+	// ConstraintRequireApproval holds the operation for human approval.
 	ConstraintRequireApproval
-	// ConstraintDeny means the operation is denied.
+	// ConstraintDeny rejects the operation outright.
 	ConstraintDeny
 )
 
-// ConstraintViolation describes why a constraint was violated.
+// ConstraintViolation explains which policy rejected an operation.
 type ConstraintViolation struct {
 	Constraint string
 	Message    string
 }
 
-func (v ConstraintViolation) Error() string {
-	return v.Message
+// Operation describes the calendar operation being evaluated.
+type Operation struct {
+	Name       string
+	CalendarID string
+	Attendees  []string
+	Start      time.Time
+	End        time.Time
+	// AllDay marks an operation the caller has identified as an all-day event.
+	AllDay bool
+	// TimesKnown is false when the effective start/end could not be determined
+	// (for example a partial update whose existing event could not be read).
+	TimesKnown bool
 }
 
-// EvaluateConstraints checks if an operation is allowed based on key constraints.
-// Returns the result and any violations.
-func EvaluateConstraints(
-	authKey *AuthenticatedKey,
-	operation string,
-	calendarID string,
-	attendees []string,
-	start, end time.Time,
-) (ConstraintResult, *ConstraintViolation) {
-	// If no constraints, use tier defaults
-	if authKey.Constraints == nil {
-		return getTierDefault(authKey.Tier, operation), nil
+// Evaluate applies a key's constraints to an operation.
+//
+// Evaluation is fail-closed: anything the policy cannot conclusively allow ends
+// up requiring human approval rather than executing silently.
+func Evaluate(authKey *AuthenticatedKey, op Operation) (ConstraintResult, *ConstraintViolation) {
+	if authKey == nil {
+		return ConstraintDeny, &ConstraintViolation{
+			Constraint: "authentication",
+			Message:    "No authenticated API key",
+		}
+	}
+
+	tierResult := tierDefault(authKey.Tier, op.Name)
+	if tierResult == ConstraintDeny {
+		return ConstraintDeny, &ConstraintViolation{
+			Constraint: "tier",
+			Message:    fmt.Sprintf("The %s tier cannot perform %s", authKey.Tier, op.Name),
+		}
 	}
 
 	constraints := authKey.Constraints
+	if constraints == nil {
+		return tierResult, nil
+	}
 
-	// Check operation override
-	if constraints.Operations != nil {
-		if action, ok := constraints.Operations[operation]; ok {
-			switch action {
-			case "deny":
-				return ConstraintDeny, &ConstraintViolation{
-					Constraint: "operation",
-					Message:    fmt.Sprintf("Operation %s is not allowed for this API key", operation),
-				}
-			case "allow", "auto":
-				// Will still check other constraints
-			case "require_approval":
-				// Continue checking other constraints, but will require approval
-			}
+	// An explicit per-operation policy is evaluated first, because "deny"
+	// short-circuits everything else.
+	operationPolicy := constraints.Operations[op.Name]
+	if operationPolicy == database.OperationPolicyDeny {
+		return ConstraintDeny, &ConstraintViolation{
+			Constraint: "operation",
+			Message:    fmt.Sprintf("Operation %s is not allowed for this API key", op.Name),
 		}
 	}
 
-	// Check calendar allowlist
-	if len(constraints.CalendarAllowlist) > 0 {
-		allowed := false
-		for _, allowedCal := range constraints.CalendarAllowlist {
-			if allowedCal == calendarID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return ConstraintDeny, &ConstraintViolation{
-				Constraint: "calendar_allowlist",
-				Message:    fmt.Sprintf("Calendar %s is not in the allowed list", calendarID),
-			}
+	if len(constraints.CalendarAllowlist) > 0 && !CalendarAllowed(op.CalendarID, constraints.CalendarAllowlist) {
+		return ConstraintDeny, &ConstraintViolation{
+			Constraint: "calendar_allowlist",
+			Message:    fmt.Sprintf("Calendar %s is not in the allowed list", op.CalendarID),
 		}
 	}
 
-	// Check max duration
-	if constraints.MaxDurationMinutes > 0 {
-		duration := end.Sub(start)
+	if constraints.MaxAttendees > 0 && len(op.Attendees) > constraints.MaxAttendees {
+		return ConstraintDeny, &ConstraintViolation{
+			Constraint: "max_attendees",
+			Message: fmt.Sprintf("Number of attendees (%d) exceeds the maximum allowed (%d)",
+				len(op.Attendees), constraints.MaxAttendees),
+		}
+	}
+
+	// Duration and all-day rules can only be applied when the effective times
+	// are known. When they are not, approval is required rather than assumed.
+	timeChecksDeferred := false
+	if constraints.MaxDurationMinutes > 0 || constraints.BlockAllDayEvents {
+		if !op.TimesKnown {
+			timeChecksDeferred = true
+		}
+	}
+
+	if op.TimesKnown && constraints.MaxDurationMinutes > 0 {
+		duration := op.End.Sub(op.Start)
 		maxDuration := time.Duration(constraints.MaxDurationMinutes) * time.Minute
 		if duration > maxDuration {
 			return ConstraintDeny, &ConstraintViolation{
 				Constraint: "max_duration",
-				Message:    fmt.Sprintf("Event duration (%v) exceeds maximum allowed (%d minutes)", duration, constraints.MaxDurationMinutes),
+				Message: fmt.Sprintf("Event duration (%s) exceeds the maximum allowed (%d minutes)",
+					duration.Round(time.Minute), constraints.MaxDurationMinutes),
 			}
 		}
 	}
 
-	// Check max attendees
-	if constraints.MaxAttendees > 0 && len(attendees) > constraints.MaxAttendees {
+	if op.TimesKnown && constraints.BlockAllDayEvents && isAllDay(op) {
 		return ConstraintDeny, &ConstraintViolation{
-			Constraint: "max_attendees",
-			Message:    fmt.Sprintf("Number of attendees (%d) exceeds maximum allowed (%d)", len(attendees), constraints.MaxAttendees),
+			Constraint: "all_day_events",
+			Message:    "All-day events are not allowed for this API key",
 		}
 	}
 
-	// Check attendee domains
+	// Every attendee is examined before returning, so a denied domain later in
+	// the list is not masked by an earlier one that merely needs approval.
+	externalAttendee := ""
 	if len(constraints.AttendeeDomainAllowlist) > 0 {
-		for _, attendee := range attendees {
-			if !isEmailInDomainList(attendee, constraints.AttendeeDomainAllowlist) {
-				if constraints.AllowExternalAttendees != nil && !*constraints.AllowExternalAttendees {
-					return ConstraintDeny, &ConstraintViolation{
-						Constraint: "attendee_domain",
-						Message:    fmt.Sprintf("Attendee %s is not in an allowed domain", attendee),
-					}
+		allowExternal := constraints.AllowExternalAttendees == nil || *constraints.AllowExternalAttendees
+		for _, attendee := range op.Attendees {
+			if emailInDomains(attendee, constraints.AttendeeDomainAllowlist) {
+				continue
+			}
+			if !allowExternal {
+				return ConstraintDeny, &ConstraintViolation{
+					Constraint: "attendee_domain",
+					Message:    fmt.Sprintf("Attendee %s is not in an allowed domain", attendee),
 				}
-				// External attendee, require approval
-				return ConstraintRequireApproval, nil
+			}
+			if externalAttendee == "" {
+				externalAttendee = attendee
 			}
 		}
 	}
 
-	// Check all-day events
-	if constraints.BlockAllDayEvents {
-		// All-day events typically have no time component or span full days
-		// For simplicity, check if duration is >= 24 hours
-		if end.Sub(start) >= 24*time.Hour {
-			return ConstraintDeny, &ConstraintViolation{
-				Constraint: "all_day_events",
-				Message:    "All-day events are not allowed for this API key",
-			}
-		}
+	if externalAttendee != "" || timeChecksDeferred {
+		return ConstraintRequireApproval, nil
 	}
 
-	// Check operation-specific setting
-	if constraints.Operations != nil {
-		if action, ok := constraints.Operations[operation]; ok && action == "require_approval" {
-			return ConstraintRequireApproval, nil
-		}
+	switch operationPolicy {
+	case database.OperationPolicyRequireApproval:
+		return ConstraintRequireApproval, nil
+	case database.OperationPolicyAuto:
+		// An explicit auto policy is the one case that may relax the tier
+		// default, and only after every other constraint above has passed.
+		return ConstraintAllow, nil
 	}
 
-	// Use tier default
-	return getTierDefault(authKey.Tier, operation), nil
+	return tierResult, nil
 }
 
-// getTierDefault returns the default constraint result for a tier and operation.
-func getTierDefault(tier, operation string) ConstraintResult {
+// tierDefault is the baseline policy for a tier when a key sets no explicit
+// per-operation policy.
+func tierDefault(tier, operation string) ConstraintResult {
+	isWrite := operation == database.OperationCreateEvent ||
+		operation == database.OperationUpdateEvent ||
+		operation == database.OperationDeleteEvent
+
 	switch tier {
 	case database.TierRead:
-		// Read tier cannot perform write operations
-		if operation == database.OperationCreateEvent ||
-			operation == database.OperationUpdateEvent ||
-			operation == database.OperationDeleteEvent {
+		if isWrite {
 			return ConstraintDeny
 		}
 		return ConstraintAllow
-
 	case database.TierWrite:
-		// Write tier requires approval for write operations
-		if operation == database.OperationCreateEvent ||
-			operation == database.OperationUpdateEvent ||
-			operation == database.OperationDeleteEvent {
+		if isWrite {
 			return ConstraintRequireApproval
 		}
 		return ConstraintAllow
-
 	case database.TierAdmin:
-		// Admin tier auto-approves everything (but still logged)
 		return ConstraintAllow
-
 	default:
-		// Unknown tier, require approval
 		return ConstraintRequireApproval
 	}
 }
 
-// isEmailInDomainList checks if an email's domain is in the allowlist.
-func isEmailInDomainList(email string, domains []string) bool {
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return false
-	}
-
-	emailDomain := strings.ToLower(parts[1])
-	for _, domain := range domains {
-		if strings.ToLower(domain) == emailDomain {
+// CalendarAllowed reports whether a calendar is permitted by an allowlist.
+// A bare "*" entry permits every calendar.
+func CalendarAllowed(calendarID string, allowlist []string) bool {
+	for _, allowed := range allowlist {
+		if allowed == "*" || allowed == calendarID {
 			return true
 		}
 	}
-
 	return false
 }
 
-// CanPerformOperation is a simple check if the tier allows the operation at all.
-func CanPerformOperation(tier, operation string) bool {
-	switch tier {
-	case database.TierRead:
-		// Read tier can only perform read operations
-		return operation != database.OperationCreateEvent &&
-			operation != database.OperationUpdateEvent &&
-			operation != database.OperationDeleteEvent
-
-	case database.TierWrite, database.TierAdmin:
-		// Write and admin can perform all operations
+// isAllDay reports whether an operation covers whole days.
+func isAllDay(op Operation) bool {
+	if op.AllDay {
 		return true
-
-	default:
-		return false
 	}
+	// Fall back to the shape of the interval for callers that cannot say.
+	return op.End.Sub(op.Start) >= 24*time.Hour
 }
 
-// RequiresApproval checks if an operation requires approval for the given tier.
-func RequiresApproval(tier, operation string) bool {
-	switch tier {
-	case database.TierRead:
-		// Read tier can't perform write operations at all
+func emailInDomains(email string, domains []string) bool {
+	_, domain, found := strings.Cut(email, "@")
+	if !found {
 		return false
-
-	case database.TierWrite:
-		// Write tier requires approval for write operations
-		return operation == database.OperationCreateEvent ||
-			operation == database.OperationUpdateEvent ||
-			operation == database.OperationDeleteEvent
-
-	case database.TierAdmin:
-		// Admin tier doesn't require approval
-		return false
-
-	default:
-		// Unknown tier, require approval
-		return true
 	}
+	domain = strings.ToLower(domain)
+	for _, allowed := range domains {
+		if strings.EqualFold(strings.TrimPrefix(allowed, "@"), domain) {
+			return true
+		}
+	}
+	return false
 }

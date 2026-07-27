@@ -4,28 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	schedcrypto "github.com/dtorcivia/schedlock/internal/crypto"
 	"github.com/dtorcivia/schedlock/internal/database"
 )
 
-// CredentialsStore manages encrypted notification provider credentials.
-type CredentialsStore struct {
-	db        *database.DB
-	encryptor *schedcrypto.Encryptor
-}
-
-// NewCredentialsStore creates a new credentials store.
-func NewCredentialsStore(db *database.DB, encryptionKey string) (*CredentialsStore, error) {
-	encryptor, err := schedcrypto.NewEncryptor(encryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create encryptor: %w", err)
-	}
-	return &CredentialsStore{db: db, encryptor: encryptor}, nil
-}
-
-// NtfyCredentials holds ntfy provider credentials.
+// NtfyCredentials configures the ntfy provider.
 type NtfyCredentials struct {
 	ServerURL      string `json:"server_url"`
 	Topic          string `json:"topic"`
@@ -34,7 +20,7 @@ type NtfyCredentials struct {
 	MinimalContent bool   `json:"minimal_content,omitempty"`
 }
 
-// PushoverCredentials holds Pushover provider credentials.
+// PushoverCredentials configures the Pushover provider.
 type PushoverCredentials struct {
 	AppToken string `json:"app_token"`
 	UserKey  string `json:"user_key"`
@@ -42,35 +28,52 @@ type PushoverCredentials struct {
 	Sound    string `json:"sound,omitempty"`
 }
 
-// TelegramCredentials holds Telegram provider credentials.
+// TelegramCredentials configures the Telegram provider.
 type TelegramCredentials struct {
 	BotToken      string `json:"bot_token"`
 	ChatID        string `json:"chat_id"`
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 }
 
-// GoogleOAuthCredentials holds Google OAuth client credentials.
-type GoogleOAuthCredentials struct {
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
-
-// WebhookCredentials holds generic webhook provider credentials.
+// WebhookCredentials configures the generic webhook provider.
 type WebhookCredentials struct {
 	URL            string `json:"url"`
 	Secret         string `json:"secret,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
-// ProviderCredentials holds the enabled state and credentials for a provider.
-type ProviderCredentials struct {
-	Provider    string
-	Enabled     bool
-	Credentials interface{} // NtfyCredentials, PushoverCredentials, or TelegramCredentials
+// GoogleOAuthCredentials holds the Google OAuth client credentials.
+type GoogleOAuthCredentials struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
-// Save stores encrypted credentials for a provider.
-func (s *CredentialsStore) Save(ctx context.Context, provider string, enabled bool, credentials interface{}) error {
+// ProviderCredentials is a provider's stored settings.
+type ProviderCredentials struct {
+	Provider string
+	Enabled  bool
+	// Credentials is one of the *Credentials types above, or nil when nothing
+	// has been stored.
+	Credentials any
+}
+
+// CredentialsStore persists provider credentials, encrypted at rest.
+type CredentialsStore struct {
+	db        *database.DB
+	encryptor *schedcrypto.Encryptor
+}
+
+// NewCredentialsStore creates a credentials store.
+func NewCredentialsStore(db *database.DB, encryptionKey string) (*CredentialsStore, error) {
+	encryptor, err := schedcrypto.NewEncryptor(encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create encryptor: %w", err)
+	}
+	return &CredentialsStore{db: db, encryptor: encryptor}, nil
+}
+
+// Save stores a provider's credentials and enabled state.
+func (s *CredentialsStore) Save(ctx context.Context, provider string, enabled bool, credentials any) error {
 	credJSON, err := json.Marshal(credentials)
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
@@ -81,11 +84,6 @@ func (s *CredentialsStore) Save(ctx context.Context, provider string, enabled bo
 		return fmt.Errorf("failed to encrypt credentials: %w", err)
 	}
 
-	enabledInt := 0
-	if enabled {
-		enabledInt = 1
-	}
-
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO notification_credentials (provider, enabled, credentials_enc, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
@@ -93,80 +91,33 @@ func (s *CredentialsStore) Save(ctx context.Context, provider string, enabled bo
 			enabled = excluded.enabled,
 			credentials_enc = excluded.credentials_enc,
 			updated_at = datetime('now')
-	`, provider, enabledInt, encrypted)
-
+	`, provider, boolToInt(enabled), encrypted)
 	return err
 }
 
-// Load retrieves and decrypts credentials for a provider.
+// Load reads one provider's credentials, returning (nil, nil) when none are
+// stored.
 func (s *CredentialsStore) Load(ctx context.Context, provider string) (*ProviderCredentials, error) {
-	var enabled int
-	var credEnc []byte
+	var (
+		enabled int
+		credEnc []byte
+	)
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT enabled, credentials_enc FROM notification_credentials WHERE provider = ?
 	`, provider).Scan(&enabled, &credEnc)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	result := &ProviderCredentials{
-		Provider: provider,
-		Enabled:  enabled == 1,
-	}
-
-	if credEnc == nil || len(credEnc) == 0 {
-		return result, nil
-	}
-
-	decrypted, err := s.encryptor.Decrypt(credEnc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt credentials: %w", err)
-	}
-
-	switch provider {
-	case "ntfy":
-		var creds NtfyCredentials
-		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal ntfy credentials: %w", err)
-		}
-		result.Credentials = &creds
-	case "pushover":
-		var creds PushoverCredentials
-		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal pushover credentials: %w", err)
-		}
-		result.Credentials = &creds
-	case "telegram":
-		var creds TelegramCredentials
-		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal telegram credentials: %w", err)
-		}
-		result.Credentials = &creds
-	case "google_oauth":
-		var creds GoogleOAuthCredentials
-		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal google_oauth credentials: %w", err)
-		}
-		result.Credentials = &creds
-	case "webhook":
-		var creds WebhookCredentials
-		if err := json.Unmarshal([]byte(decrypted), &creds); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal webhook credentials: %w", err)
-		}
-		result.Credentials = &creds
-	default:
-		return nil, fmt.Errorf("unknown provider: %s", provider)
-	}
-
-	return result, nil
+	return s.decode(provider, enabled == 1, credEnc)
 }
 
-// LoadAll retrieves credentials for all configured providers.
+// LoadAll reads credentials for every configured provider.
 func (s *CredentialsStore) LoadAll(ctx context.Context) (map[string]*ProviderCredentials, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT provider, enabled, credentials_enc FROM notification_credentials
@@ -178,74 +129,90 @@ func (s *CredentialsStore) LoadAll(ctx context.Context) (map[string]*ProviderCre
 
 	result := make(map[string]*ProviderCredentials)
 	for rows.Next() {
-		var provider string
-		var enabled int
-		var credEnc []byte
-
+		var (
+			provider string
+			enabled  int
+			credEnc  []byte
+		)
 		if err := rows.Scan(&provider, &enabled, &credEnc); err != nil {
 			return nil, err
 		}
 
-		pc := &ProviderCredentials{
-			Provider: provider,
-			Enabled:  enabled == 1,
+		creds, err := s.decode(provider, enabled == 1, credEnc)
+		if err != nil {
+			// One unreadable provider must not hide the rest; it is reported
+			// as present-but-unconfigured.
+			result[provider] = &ProviderCredentials{Provider: provider, Enabled: enabled == 1}
+			continue
 		}
-
-		if credEnc != nil && len(credEnc) > 0 {
-			decrypted, err := s.encryptor.Decrypt(credEnc)
-			if err != nil {
-				continue // Skip providers with decryption errors
-			}
-
-			switch provider {
-			case "ntfy":
-				var creds NtfyCredentials
-				if json.Unmarshal([]byte(decrypted), &creds) == nil {
-					pc.Credentials = &creds
-				}
-			case "pushover":
-				var creds PushoverCredentials
-				if json.Unmarshal([]byte(decrypted), &creds) == nil {
-					pc.Credentials = &creds
-				}
-			case "telegram":
-				var creds TelegramCredentials
-				if json.Unmarshal([]byte(decrypted), &creds) == nil {
-					pc.Credentials = &creds
-				}
-			case "google_oauth":
-				var creds GoogleOAuthCredentials
-				if json.Unmarshal([]byte(decrypted), &creds) == nil {
-					pc.Credentials = &creds
-				}
-			case "webhook":
-				var creds WebhookCredentials
-				if json.Unmarshal([]byte(decrypted), &creds) == nil {
-					pc.Credentials = &creds
-				}
-			}
-		}
-
-		result[provider] = pc
+		result[provider] = creds
 	}
 
 	return result, rows.Err()
 }
 
-// Delete removes credentials for a provider.
+// LoadGoogleOAuth returns the stored Google OAuth client credentials,
+// satisfying google.CredentialLoader.
+func (s *CredentialsStore) LoadGoogleOAuth(ctx context.Context) (string, string, error) {
+	creds, err := s.Load(ctx, ProviderGoogleOAuth)
+	if err != nil {
+		return "", "", err
+	}
+	if creds == nil {
+		return "", "", errors.New("no stored Google OAuth credentials")
+	}
+	oauth, ok := creds.Credentials.(*GoogleOAuthCredentials)
+	if !ok || oauth == nil {
+		return "", "", errors.New("stored Google OAuth credentials are unreadable")
+	}
+	return oauth.ClientID, oauth.ClientSecret, nil
+}
+
+// Delete removes a provider's stored credentials.
 func (s *CredentialsStore) Delete(ctx context.Context, provider string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM notification_credentials WHERE provider = ?`, provider)
 	return err
 }
 
-// IsEnabled checks if a provider is enabled in the database.
-func (s *CredentialsStore) IsEnabled(ctx context.Context, provider string) bool {
-	var enabled int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT enabled FROM notification_credentials WHERE provider = ?
-	`, provider).Scan(&enabled)
-	if err != nil {
-		return false
+// decode decrypts and unmarshals a provider's credentials into its own type.
+func (s *CredentialsStore) decode(provider string, enabled bool, credEnc []byte) (*ProviderCredentials, error) {
+	result := &ProviderCredentials{Provider: provider, Enabled: enabled}
+	if len(credEnc) == 0 {
+		return result, nil
 	}
-	return enabled == 1
+
+	decrypted, err := s.encryptor.Decrypt(credEnc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt %s credentials: %w", provider, err)
+	}
+
+	var target any
+	switch provider {
+	case ProviderNtfy:
+		target = &NtfyCredentials{}
+	case ProviderPushover:
+		target = &PushoverCredentials{}
+	case ProviderTelegram:
+		target = &TelegramCredentials{}
+	case ProviderWebhook:
+		target = &WebhookCredentials{}
+	case ProviderGoogleOAuth:
+		target = &GoogleOAuthCredentials{}
+	default:
+		return nil, fmt.Errorf("unknown provider: %s", provider)
+	}
+
+	if err := json.Unmarshal([]byte(decrypted), target); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal %s credentials: %w", provider, err)
+	}
+
+	result.Credentials = target
+	return result, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
